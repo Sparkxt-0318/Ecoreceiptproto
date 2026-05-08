@@ -52,9 +52,13 @@ export type EvidenceItem = {
   status: EvidenceStatus;
   url?: string;
   tier: SourceTier;
-  data: unknown;                 // shape varies by source; specialists pick what they need
-  fetched_at: string;            // ISO
-  content_hash: string;          // sha256 of fetched body, "" on non-ok
+  // TODO(post-MVP): replace `unknown` with a tagged union keyed on `source: EvidenceSource`
+  // so per-source response shapes are checked at the type system rather than narrowed in specialists.
+  data: unknown;
+  /** ISO 8601 UTC timestamp of fetch completion. */
+  fetched_at: string;
+  /** sha256 hex (64 chars) of the canonical raw payload at fetch time. Stable across runs for the same upstream content. */
+  content_hash: string;
 };
 
 export type RawEvidence = {
@@ -111,23 +115,28 @@ export type Footprint = {
   co2e_kg: number;
   water_l: number;
   land_m2: number;
-  // Material/sourcing inputs (0..1 unless noted).
-  recycled_content_pct?: number; // [0, 100]
-  water_stress_aqueduct?: number;// raw 0–5 baseline water stress score
-  regulatory_regime_score?: number; // [0, 1]
-  certified_input_flag?: boolean;
-  // End-of-life inputs.
-  recyclability?: number;        // [0, 1]
-  biodegradability?: number;     // [0, 1]
-  repair_score?: number;         // [0, 1]
+  // Material/sourcing inputs. `null` ≠ 0 — it means "unknown / unmeasurable for this product".
+  // Stage 8 must distinguish "missing input" from "zero" when computing material_sourcing.
+  recycled_content_pct: number | null;     // [0, 100] when present
+  water_stress_baseline: number | null;    // raw 0–5 Aqueduct baseline water stress score
+  regulatory_regime_score: number | null;  // [0, 1]
+  certified_input_flag: boolean | null;
+  // End-of-life inputs. Same null semantics.
+  recyclability_score: number | null;      // [0, 1]
+  biodegradability_score: number | null;   // [0, 1]
+  repair_score: number | null;             // [0, 1]
 };
 
 // ─── Scores (stage 8 output) ─────────────────────────────────────────────────
+// `null` for any sub-score means "could not be computed due to insufficient input data."
+// claim_integrity is null in the no-claims footprint-only path.
+// The other three become null when their underlying Footprint inputs are all null.
+// EcoScore computation in stage 8 sums non-null sub-scores and rescales to a 0–100 range.
 export type SubScores = {
-  claim_integrity: number | null;   // null when no claims existed → ecoscore rescales
-  carbon_footprint: number;         // 0–25
-  material_sourcing: number;        // 0–25
-  end_of_life: number;              // 0–25
+  claim_integrity: number | null;   // 0–25
+  carbon_footprint: number | null;  // 0–25
+  material_sourcing: number | null; // 0–25
+  end_of_life: number | null;       // 0–25
 };
 
 export type StatusBadge =
