@@ -1,0 +1,171 @@
+{
+  "_meta": {
+    "_source_food": "Our World in Data, 'Environmental impacts of food production' (Poore & Nemecek, 2018), tomato/dairy/meat/coffee tables.",
+    "_source_apparel": "Quantis 'Measuring Fashion' (2018) median per-garment LCA values.",
+    "_source_electronics": "Apple iPhone Product Environmental Reports (2020–2023 median).",
+    "_source_transport": "ICCT 'CO2 emissions from commercial aviation' (2020), short-haul per-passenger averages.",
+    "_source_beauty": "L'Oréal CDP disclosures + sectoral averages from Carbon Trust.",
+    "_source_cleaning": "Procter & Gamble + Unilever sustainability reports, sector medians.",
+    "_units": "co2e_kg per unit, water_l per unit, land_m2 per unit. Unit defined by category convention (per garment, per device, per kg food, per passenger-km transport)."
+  },
+  "food.condiment.ketchup": {
+    "co2e_kg_median": 2.1,
+    "co2e_kg_p10": 1.4,
+    "co2e_kg_p90": 3.4,
+    "water_l_median": 530,
+    "land_m2_median": 0.42,
+    "_source": "Our World in Data tomato product LCA, 2018"
+  },
+  "food.canned.tomato": {
+    "co2e_kg_median": 1.4,
+    "co2e_kg_p10": 0.9,
+    "co2e_kg_p90": 2.2,
+    "water_l_median": 220,
+    "land_m2_median": 0.30,
+    "_source": "Our World in Data tomato product LCA, 2018"
+  },
+  "food.dairy.milk": {
+    "co2e_kg_median": 3.2,
+    "co2e_kg_p10": 1.9,
+    "co2e_kg_p90": 5.1,
+    "water_l_median": 628,
+    "land_m2_median": 8.95,
+    "_source": "Our World in Data dairy LCA, 2018"
+  },
+  "food.dairy.cheese": {
+    "co2e_kg_median": 21.0,
+    "co2e_kg_p10": 12.0,
+    "co2e_kg_p90": 31.0,
+    "water_l_median": 5605,
+    "land_m2_median": 87.8,
+    "_source": "Our World in Data dairy LCA, 2018"
+  },
+  "food.meat.beef": {
+    "co2e_kg_median": 60.0,
+    "co2e_kg_p10": 39.0,
+    "co2e_kg_p90": 99.0,
+    "water_l_median": 15415,
+    "land_m2_median": 326.2,
+    "_source": "Our World in Data meat LCA, 2018"
+  },
+  "food.meat.chicken": {
+    "co2e_kg_median": 6.9,
+    "co2e_kg_p10": 4.5,
+    "co2e_kg_p90": 9.9,
+    "water_l_median": 4325,
+    "land_m2_median": 7.1,
+    "_source": "Our World in Data meat LCA, 2018"
+  },
+  "food.beverage.coffee": {
+    "co2e_kg_median": 16.5,
+    "co2e_kg_p10": 9.0,
+    "co2e_kg_p90": 28.5,
+    "water_l_median": 18900,
+    "land_m2_median": 21.2,
+    "_source": "Our World in Data coffee LCA, 2018"
+  },
+  "food.beverage.beer": {
+    "co2e_kg_median": 0.74,
+    "co2e_kg_p10": 0.5,
+    "co2e_kg_p90": 1.1,
+    "water_l_median": 74,
+    "land_m2_median": 0.5,
+    "_source": "Our World in Data beverage LCA, 2018"
+  },
+  "food.snack.chocolate": {
+    "co2e_kg_median": 19.0,
+    "co2e_kg_p10": 11.0,
+    "co2e_kg_p90": 30.0,
+    "water_l_median": 17200,
+    "land_m2_median": 23.4,
+    "_source": "Our World in Data confectionery LCA, 2018"
+  },
+  "apparel.fleece.synthetic": {
+    "co2e_kg_median": 24.0,
+    "co2e_kg_p10": 14.0,
+    "co2e_kg_p90": 38.0,
+    "water_l_median": 2700,
+    "land_m2_median": 0.0,
+    "_source": "Quantis Measuring Fashion 2018, polyester fleece median"
+  },
+  "apparel.tshirt.cotton": {
+    "co2e_kg_median": 8.5,
+    "co2e_kg_p10": 5.5,
+    "co2e_kg_p90": 13.0,
+    "water_l_median": 2700,
+    "land_m2_median": 5.4,
+    "_source": "Quantis Measuring Fashion 2018, cotton tee median"
+  },
+  "apparel.shoe.casual": {
+    "co2e_kg_median": 14.0,
+    "co2e_kg_p10": 8.0,
+    "co2e_kg_p90": 23.0,
+    "water_l_median": 8000,
+    "land_m2_median": 1.5,
+    "_source": "MIT 'Comparative LCA of athletic shoes' 2013, casual shoe median"
+  },
+  "apparel.jeans.denim": {
+    "co2e_kg_median": 33.0,
+    "co2e_kg_p10": 22.0,
+    "co2e_kg_p90": 50.0,
+    "water_l_median": 7500,
+    "land_m2_median": 8.6,
+    "_source": "Levi Strauss LCA 2015 + sector averages"
+  },
+  "electronics.smartphone": {
+    "co2e_kg_median": 70.0,
+    "co2e_kg_p10": 55.0,
+    "co2e_kg_p90": 95.0,
+    "water_l_median": 12760,
+    "land_m2_median": 0.0,
+    "_source": "Apple Environmental Report iPhone 13/14/15 median"
+  },
+  "electronics.laptop": {
+    "co2e_kg_median": 350.0,
+    "co2e_kg_p10": 200.0,
+    "co2e_kg_p90": 550.0,
+    "water_l_median": 190000,
+    "land_m2_median": 0.0,
+    "_source": "Dell + Apple laptop LCA medians, 2022"
+  },
+  "transport.air.shorthaul": {
+    "co2e_kg_median": 0.255,
+    "co2e_kg_p10": 0.18,
+    "co2e_kg_p90": 0.35,
+    "water_l_median": 0.0,
+    "land_m2_median": 0.0,
+    "_source": "ICCT short-haul per-passenger-km, 2020"
+  },
+  "beauty.cosmetic.lipstick": {
+    "co2e_kg_median": 1.2,
+    "co2e_kg_p10": 0.8,
+    "co2e_kg_p90": 1.9,
+    "water_l_median": 25,
+    "land_m2_median": 0.05,
+    "_source": "Carbon Trust cosmetics sector average, 2019"
+  },
+  "beauty.shampoo.bottle": {
+    "co2e_kg_median": 1.8,
+    "co2e_kg_p10": 1.1,
+    "co2e_kg_p90": 2.7,
+    "water_l_median": 12,
+    "land_m2_median": 0.0,
+    "_source": "Unilever Sustainable Living Plan disclosures"
+  },
+  "cleaning.detergent.laundry": {
+    "co2e_kg_median": 0.6,
+    "co2e_kg_p10": 0.4,
+    "co2e_kg_p90": 0.9,
+    "water_l_median": 5,
+    "land_m2_median": 0.0,
+    "_source": "P&G Tide LCA disclosures + sector average"
+  },
+  "cleaning.dishsoap": {
+    "co2e_kg_median": 0.4,
+    "co2e_kg_p10": 0.25,
+    "co2e_kg_p90": 0.7,
+    "water_l_median": 3,
+    "land_m2_median": 0.0,
+    "_source": "Method + Seventh Generation public disclosures, 2021"
+  }
+}
