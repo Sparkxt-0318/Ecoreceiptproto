@@ -513,6 +513,78 @@ describe('Schema: RawSpecialistOutputSchema discriminated union', () => {
     });
     expect(result.success).toBe(true);
   });
+
+  it('accepts an INSUFFICIENT_EVIDENCE verdict with rebuttal_source_tier: 0 (Phase-10 model behavior)', async () => {
+    const { RawSpecialistOutputSchema } = await import('../schemas.js');
+    const result = RawSpecialistOutputSchema.safeParse({
+      verdict: 'INSUFFICIENT_EVIDENCE',
+      provision_cited: 'FTC Green Guides §260.5(a)',
+      rebuttal_quote: '',
+      rebuttal_source_url: '',
+      rebuttal_source_tier: 0,
+      reasoning: 'no source addresses the claim',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.rebuttal_source_tier).toBe(0);
+    }
+  });
+
+  it('still rejects a SourcedVerdict (VERIFIED) with rebuttal_source_tier: 0', async () => {
+    const { RawSpecialistOutputSchema } = await import('../schemas.js');
+    const result = RawSpecialistOutputSchema.safeParse({
+      verdict: 'VERIFIED',
+      provision_cited: 'p',
+      rebuttal_quote: 'q',
+      rebuttal_source_url: 'https://www.sec.gov/foo',
+      rebuttal_source_tier: 0,
+      reasoning: 'r',
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('runSpecialist: tier:0 normalization in IE output', () => {
+  it('parses tier:0 from the IE branch and outputs a normalized SpecialistOutput with tier=5 and the real provision', async () => {
+    const { runSpecialist } = await import('../specialists/base.js');
+    const create = vi.fn().mockResolvedValue({
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            verdict: 'INSUFFICIENT_EVIDENCE',
+            provision_cited: 'FTC Green Guides §260.4(b)',
+            rebuttal_quote: '',
+            rebuttal_source_url: '',
+            rebuttal_source_tier: 0, // ← the failure mode from smoke run #4
+            reasoning: 'evidence does not address the claim',
+          }),
+        },
+      ],
+      usage: { input_tokens: 100, output_tokens: 50 },
+    });
+    const client = { messages: { create } } as unknown as import('@anthropic-ai/sdk').default;
+
+    const claim = {
+      id: 'claim-1',
+      quote: 'unspecified',
+      type_hint: 'qualitative' as const,
+      source_url: 'https://example.com/x',
+      source_hash: 'a'.repeat(64),
+      retrieval_date: '2026-05-09T00:00:00.000Z',
+    };
+
+    const result = await runSpecialist(
+      { audit_type: 'qualitative', standard_name: 'FTC Green Guides §260.4' },
+      claim,
+      [],
+      client,
+    );
+
+    expect(result.output.verdict_type).toBe('INSUFFICIENT_EVIDENCE');
+    expect(result.output.provision_cited).toBe('FTC Green Guides §260.4(b)');
+    expect(result.output.rebuttal_source_tier).toBe(5); // normalized from 0
+  });
 });
 
 // ─── Stage 7: self-classified IE preserves provision_cited ───────────────────

@@ -130,10 +130,13 @@ const InsufficientEvidenceVerdictSchema = z.object({
   rebuttal_source_url: z
     .union([z.string().url(), z.literal('')])
     .default(''),
-  // Permissive: 1-5 OR null. Output mapping in base.ts normalizes null → 5
-  // so downstream code sees a SourceTier.
+  // Permissive: 0 (model emits this when "no tier"), 1-5, or null. Output
+  // mapping in base.ts normalizes 0 and null → 5 so downstream code sees
+  // a SourceTier. The IE branch of the tier validator already short-
+  // circuits, so the normalized value never affects the receipt's
+  // honesty-gate behavior.
   rebuttal_source_tier: z
-    .union([SourceTierSchema, z.null()])
+    .union([z.literal(0), SourceTierSchema, z.null()])
     .default(null),
 });
 
