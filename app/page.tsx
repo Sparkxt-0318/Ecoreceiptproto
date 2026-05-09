@@ -64,6 +64,61 @@ type EcoReceipt = {
 
 type Status = 'idle' | 'loading' | 'ok' | 'error';
 
+type ProgressPhase =
+  | 'resolve'
+  | 'evidence'
+  | 'extract'
+  | 'audit'
+  | 'footprint'
+  | 'finalize';
+
+type ProgressEvent =
+  | {
+      type: 'phase';
+      phase: ProgressPhase;
+      done: boolean;
+      message: string;
+      completed?: number;
+      total?: number;
+    }
+  | { type: 'result'; receipt: EcoReceipt }
+  | { type: 'error'; error: string };
+
+type MilestoneState = 'pending' | 'active' | 'done';
+
+type Milestone = {
+  phase: ProgressPhase;
+  label: string;
+  state: MilestoneState;
+  detail?: string;
+};
+
+const MILESTONE_LABELS: Record<ProgressPhase, string> = {
+  resolve: 'Identifying product',
+  evidence: 'Gathering evidence',
+  extract: 'Extracting claims',
+  audit: 'Auditing claims',
+  footprint: 'Calculating footprint',
+  finalize: 'Sealing receipt',
+};
+
+const MILESTONE_ORDER: ProgressPhase[] = [
+  'resolve',
+  'evidence',
+  'extract',
+  'audit',
+  'footprint',
+  'finalize',
+];
+
+function initialMilestones(): Milestone[] {
+  return MILESTONE_ORDER.map((phase) => ({
+    phase,
+    label: MILESTONE_LABELS[phase],
+    state: 'pending',
+  }));
+}
+
 // ─── Badge / verdict presentation ───────────────────────────────────────────
 
 const BADGE_PRESENTATION: Record<
@@ -175,21 +230,97 @@ export default function Page() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<EcoReceipt | null>(null);
   const [showRaw, setShowRaw] = useState(false);
+  const [milestones, setMilestones] = useState<Milestone[]>(initialMilestones());
 
-  async function submit(body: BodyInit, headers?: HeadersInit): Promise<void> {
+  function applyEvent(ev: ProgressEvent): void {
+    if (ev.type === 'phase') {
+      setMilestones((prev) => {
+        const idx = prev.findIndex((m) => m.phase === ev.phase);
+        if (idx === -1) return prev;
+        const copy = prev.slice();
+        const detail =
+          ev.completed !== undefined && ev.total !== undefined
+            ? `${ev.completed} / ${ev.total} — ${ev.message}`
+            : ev.message;
+        copy[idx] = {
+          ...copy[idx]!,
+          state: ev.done ? 'done' : 'active',
+          detail,
+        };
+        // Mark any earlier still-pending milestones as done — the server is
+        // free to skip emitting "done" events when stages complete fast.
+        for (let i = 0; i < idx; i++) {
+          if (copy[i]!.state !== 'done') copy[i] = { ...copy[i]!, state: 'done' };
+        }
+        return copy;
+      });
+    } else if (ev.type === 'result') {
+      setMilestones((prev) =>
+        prev.map((m) => ({ ...m, state: 'done' as MilestoneState })),
+      );
+      setResult(ev.receipt);
+      setStatus('ok');
+    } else if (ev.type === 'error') {
+      setError(ev.error);
+      setStatus('error');
+    }
+  }
+
+  async function submit(body: BodyInit, headers: Record<string, string> = {}): Promise<void> {
     setStatus('loading');
     setError(null);
     setResult(null);
+    setMilestones(initialMilestones());
     try {
-      const r = await fetch('/api/audit', { method: 'POST', body, headers });
-      const json = await r.json();
-      if (!r.ok) {
-        setError(json.error ?? `${r.status} ${r.statusText}`);
+      const r = await fetch('/api/audit', {
+        method: 'POST',
+        body,
+        headers: { ...headers, Accept: 'text/event-stream' },
+      });
+
+      // Non-OK responses still come back as plain JSON (the server falls
+      // through to the legacy path on parse-input failure). Try JSON first.
+      const ct = r.headers.get('content-type') ?? '';
+      if (!r.ok && !ct.includes('ndjson') && !ct.includes('event-stream')) {
+        const j = (await r.json().catch(() => ({}))) as { error?: string };
+        setError(j.error ?? `${r.status} ${r.statusText}`);
         setStatus('error');
         return;
       }
-      setResult(json as EcoReceipt);
-      setStatus('ok');
+
+      // Streaming path: read NDJSON line by line.
+      const reader = r.body?.getReader();
+      if (!reader) {
+        setError('Streaming not supported by this browser/runtime.');
+        setStatus('error');
+        return;
+      }
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (!line) continue;
+          try {
+            const ev = JSON.parse(line) as ProgressEvent;
+            applyEvent(ev);
+          } catch {
+            // Skip malformed lines; the next chunk may complete them.
+          }
+        }
+      }
+      if (buffer.trim()) {
+        try {
+          applyEvent(JSON.parse(buffer) as ProgressEvent);
+        } catch {
+          // tolerate trailing partial
+        }
+      }
     } catch (e) {
       setError((e as Error).message);
       setStatus('error');
@@ -220,6 +351,7 @@ export default function Page() {
         color: '#0f172a',
       }}
     >
+      <style>{`@keyframes eco-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>
       <header style={{ marginBottom: 24 }}>
         <h1 style={{ fontSize: 28, margin: '0 0 4px', fontWeight: 700 }}>
           EcoReceipt
@@ -291,11 +423,15 @@ export default function Page() {
         </div>
         {status === 'loading' && (
           <p style={{ color: '#64748b', fontSize: 13, margin: '12px 0 0' }}>
-            Running 10-stage audit pipeline. This usually takes 10–60 seconds depending on
-            how much evidence is reachable.
+            Running the audit pipeline. Usually 10–60 seconds depending on how much
+            evidence is reachable.
           </p>
         )}
       </section>
+
+      {(status === 'loading' || status === 'ok' || status === 'error') && (
+        <Milestones milestones={milestones} status={status} />
+      )}
 
       {error && (
         <div
@@ -727,4 +863,142 @@ function gradeColor(g: ConfidenceGrade): string {
   if (g === 'A') return '#10b981';
   if (g === 'B') return '#f59e0b';
   return '#94a3b8';
+}
+
+// ─── Milestones (live progress) ─────────────────────────────────────────────
+
+function Milestones({
+  milestones,
+  status,
+}: {
+  milestones: Milestone[];
+  status: Status;
+}): React.ReactElement {
+  return (
+    <section
+      style={{
+        ...cardStyle,
+        marginBottom: 16,
+        background: status === 'ok' ? '#f8fafc' : '#fff',
+        opacity: status === 'ok' ? 0.85 : 1,
+      }}
+    >
+      <h2 style={sectionHeading}>
+        {status === 'loading' ? 'Audit in progress' : status === 'ok' ? 'Audit complete' : 'Audit'}
+      </h2>
+      <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+        {milestones.map((m, i) => (
+          <MilestoneRow key={m.phase} milestone={m} isLast={i === milestones.length - 1} />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function MilestoneRow({
+  milestone,
+  isLast,
+}: {
+  milestone: Milestone;
+  isLast: boolean;
+}): React.ReactElement {
+  const m = milestone;
+  return (
+    <li
+      style={{
+        display: 'flex',
+        alignItems: 'flex-start',
+        gap: 12,
+        padding: '8px 0',
+        borderBottom: isLast ? 'none' : '1px solid #f1f5f9',
+      }}
+    >
+      <MilestoneIcon state={m.state} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          style={{
+            fontSize: 14,
+            fontWeight: m.state === 'active' ? 600 : 500,
+            color:
+              m.state === 'pending'
+                ? '#94a3b8'
+                : m.state === 'active'
+                  ? '#0f172a'
+                  : '#334155',
+          }}
+        >
+          {m.label}
+        </div>
+        {m.detail && (
+          <div
+            style={{
+              fontSize: 12,
+              color: '#64748b',
+              marginTop: 2,
+              wordBreak: 'break-word',
+            }}
+          >
+            {m.detail}
+          </div>
+        )}
+      </div>
+    </li>
+  );
+}
+
+function MilestoneIcon({ state }: { state: MilestoneState }): React.ReactElement {
+  if (state === 'done') {
+    return (
+      <span
+        aria-hidden
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 22,
+          height: 22,
+          borderRadius: 11,
+          background: '#10b981',
+          color: '#fff',
+          fontSize: 14,
+          fontWeight: 700,
+          flexShrink: 0,
+        }}
+      >
+        ✓
+      </span>
+    );
+  }
+  if (state === 'active') {
+    return (
+      <span
+        aria-hidden
+        style={{
+          display: 'inline-block',
+          width: 22,
+          height: 22,
+          flexShrink: 0,
+          borderRadius: 11,
+          border: '3px solid #cbd5e1',
+          borderTopColor: '#0f172a',
+          animation: 'eco-spin 0.8s linear infinite',
+          boxSizing: 'border-box',
+        }}
+      />
+    );
+  }
+  return (
+    <span
+      aria-hidden
+      style={{
+        display: 'inline-block',
+        width: 22,
+        height: 22,
+        flexShrink: 0,
+        borderRadius: 11,
+        border: '2px solid #e2e8f0',
+        boxSizing: 'border-box',
+      }}
+    />
+  );
 }

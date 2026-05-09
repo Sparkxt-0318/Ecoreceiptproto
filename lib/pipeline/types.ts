@@ -208,3 +208,32 @@ export class InsufficientProductDataError extends Error {
     this.name = 'InsufficientProductDataError';
   }
 }
+
+// ─── Streaming progress events ───────────────────────────────────────────────
+// Emitted by runPipeline via the optional onProgress callback. Delivered to
+// the UI as NDJSON when the route handler is in streaming mode. The shapes
+// are intentionally narrow: the UI maps `phase` to a fixed milestone list
+// and uses the `done` boolean to flip checkmarks.
+//
+// 'audit' phase additionally carries `completed`/`total` so the UI can show
+// per-claim progress while the longest stage runs.
+export type ProgressPhase =
+  | 'resolve'
+  | 'evidence'
+  | 'extract'
+  | 'audit'
+  | 'footprint'
+  | 'finalize';
+
+export type ProgressEvent =
+  | {
+      type: 'phase';
+      phase: ProgressPhase;
+      done: boolean;
+      message: string;
+      /** Present on audit-phase events to drive the n/total counter. */
+      completed?: number;
+      total?: number;
+    }
+  | { type: 'result'; receipt: EcoReceipt }
+  | { type: 'error'; error: string };

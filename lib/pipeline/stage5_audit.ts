@@ -108,6 +108,12 @@ export type AuditDeps = {
    * compatibility with tests that pre-date the cert-registry feature.
    */
   product?: Product;
+  /**
+   * Streaming progress callback fired once per claim as its specialist
+   * completes (whether success or synthetic-IE). Used to drive the UI's
+   * "Audited n of total claims…" milestone counter.
+   */
+  onClaimComplete?: (completed: number, total: number) => void;
 };
 
 // Cap on concurrent specialist dispatches. Tuned for the Anthropic free-tier
@@ -121,14 +127,21 @@ const AUDIT_CONCURRENCY = 3;
  * Run `fn(item)` for each item with at most `limit` invocations in flight.
  * Returns results in input order. Rejections are surfaced — callers using
  * Promise.allSettled-style handling should wrap fn() to catch errors.
+ *
+ * If `onItemComplete` is provided, it fires once per item finishing (whether
+ * fulfilled or rejected) with the running completion count. Used by
+ * runAudit to stream per-claim progress to the UI.
  */
 async function runWithConcurrency<T, R>(
   items: T[],
   fn: (item: T) => Promise<R>,
   limit: number,
+  onItemComplete?: (completed: number, total: number) => void,
 ): Promise<PromiseSettledResult<R>[]> {
   const results: PromiseSettledResult<R>[] = new Array(items.length);
   let cursor = 0;
+  let completed = 0;
+  const total = items.length;
   const workerCount = Math.min(Math.max(1, limit), items.length);
   const workers = Array.from({ length: workerCount }, async () => {
     while (cursor < items.length) {
@@ -139,6 +152,8 @@ async function runWithConcurrency<T, R>(
       } catch (reason) {
         results[i] = { status: 'rejected', reason };
       }
+      completed++;
+      onItemComplete?.(completed, total);
     }
   });
   await Promise.all(workers);
@@ -205,6 +220,7 @@ export async function runAudit(
       return table[d.specialist](d.claim, slice, deps.client);
     },
     AUDIT_CONCURRENCY,
+    deps.onClaimComplete,
   );
 
   let totalCost = 0;
