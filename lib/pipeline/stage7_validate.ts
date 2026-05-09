@@ -1,7 +1,7 @@
 // Stage 7 — Tier validator (CODE ONLY, NO LLM).
 //
-// The honesty gate. Every Verdict must clear FOUR checks before it is allowed
-// into the final receipt:
+// The honesty gate. Every NON-INSUFFICIENT_EVIDENCE verdict must clear FOUR
+// checks before it is allowed into the final receipt:
 //
 //   1. rebuttal_source_url does NOT cite the LLM-summary fallback. Brand-site
 //      content synthesized from training knowledge is acceptable as Stage 4
@@ -18,11 +18,24 @@
 // records a human-readable reason in `downgrade_reason`. The LLM-fallback
 // check runs FIRST so that "fallback URL" wins as the explanation when a
 // verdict happens to fail multiple checks at once.
+//
+// SHORT-CIRCUIT for self-classified IE verdicts: when the specialist itself
+// returned `verdict_type: 'INSUFFICIENT_EVIDENCE'`, source-tier rules don't
+// apply (the model is honestly admitting it has no source). The verdict is
+// passed through with its real `provision_cited` and `reasoning` preserved,
+// only the EMPTY_PROVISION check still runs. This is what differentiates
+// "I checked FTC §260.5(a) but found nothing usable" (kept) from "output
+// validation failed" (synthetic boilerplate).
+//
+// Honesty-gate property preserved: no SourcedVerdict (VERIFIED / FAILED /
+// CONTRADICTED_BY_PRIMARY) ever survives with Tier-4/5, empty URL, fallback
+// URL, or empty provision. That guarantee is what the receipt depends on.
 
 import { LLM_FALLBACK_TOKEN } from './sources/web_fetch.js';
 import type { RawEvidence, Verdict } from './types.js';
 
 const REASONS = {
+  SELF_REPORTED_IE: 'specialist self-reported insufficient evidence',
   LLM_FALLBACK: 'rebuttal cites llm-summary fallback',
   TIER: 'rebuttal source tier insufficient',
   EMPTY_URL: 'empty rebuttal source url',
@@ -46,6 +59,21 @@ export function validateVerdict(
   verdict: Verdict,
   evidence?: RawEvidence,
 ): Verdict {
+  // Self-classified IE: specialist already opted out of making a substantive
+  // claim. Source-tier / URL rules don't apply — preserve the real
+  // provision_cited and reasoning so the receipt can show *what* the
+  // specialist tried to check, not a "output validation failed" placeholder.
+  // Cite-or-die still applies: empty provision still downgrades.
+  if (verdict.verdict_type === 'INSUFFICIENT_EVIDENCE') {
+    if (verdict.provision_cited.trim().length === 0) {
+      return downgrade(verdict, REASONS.EMPTY_PROVISION);
+    }
+    return {
+      ...verdict,
+      downgrade_reason: verdict.downgrade_reason ?? REASONS.SELF_REPORTED_IE,
+    };
+  }
+
   // Run the LLM-fallback gate FIRST. Synthetic brand-site content (and the
   // cert specialist's "not_fetched_in_mvp" lookup placeholder, which uses the
   // same sentinel pattern) must never be promoted to primary evidence.

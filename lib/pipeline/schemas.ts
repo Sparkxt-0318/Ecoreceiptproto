@@ -88,21 +88,59 @@ export const RawClaimSchema = z.object({
 export const RawClaimsArraySchema = z.array(RawClaimSchema);
 
 /**
- * Stage 5 specialist output. The structural enforcement here is the schema-level
- * half of the honesty gate; stage 7 (validateTiers) is the runtime half. Both
- * must agree: empty/invalid URLs and empty provisions are unacceptable.
+ * Stage 5 specialist output. Discriminated on `verdict` because the two
+ * legitimate output shapes are different:
  *
- * Note: `provision_cited.min(1)` blocks empty strings. `rebuttal_source_url.url()`
- * blocks empty strings AND non-URL garbage like "see report".
+ *   - SourcedVerdict (VERIFIED / FAILED / CONTRADICTED_BY_PRIMARY): the
+ *     specialist is taking a substantive position and MUST cite a source.
+ *     Strict URL + tier required. Empty/invalid here is the schema-level
+ *     half of the honesty gate (Stage 7 is the runtime half).
+ *
+ *   - InsufficientEvidenceVerdict: the specialist is honestly admitting it
+ *     has no source. Empty `rebuttal_source_url` and null
+ *     `rebuttal_source_tier` are valid in this branch — the verdict_type
+ *     is already self-classified, so Stage 7's tier check is moot.
+ *     Preserves the real `provision_cited` and `reasoning` instead of
+ *     forcing a "output validation failed" boilerplate replacement.
+ *
+ * Length caps raised: rebuttal_quote 500→800, reasoning 400→600. Phase-7
+ * diagnostic showed the model writes longer reasoning paragraphs in the
+ * IE case (it explains what was missing) and longer quotes when source
+ * passages exceed 500 chars.
  */
-export const RawSpecialistOutputSchema = z.object({
-  verdict: VerdictTypeSchema,
+const _commonSpecialistFields = {
   provision_cited: z.string().min(1, 'provision_cited must not be empty'),
-  rebuttal_quote: z.string().max(500),
+  reasoning: z.string().max(600),
+} as const;
+
+const SourcedVerdictSchema = z.object({
+  verdict: z.enum(['VERIFIED', 'FAILED', 'CONTRADICTED_BY_PRIMARY']),
+  ..._commonSpecialistFields,
+  rebuttal_quote: z.string().max(800),
   rebuttal_source_url: z.string().url(),
   rebuttal_source_tier: SourceTierSchema,
-  reasoning: z.string().max(400),
 });
+
+const InsufficientEvidenceVerdictSchema = z.object({
+  verdict: z.literal('INSUFFICIENT_EVIDENCE'),
+  ..._commonSpecialistFields,
+  rebuttal_quote: z.string().max(800).default(''),
+  // Permissive: an empty string OR a valid URL. Specialists honestly
+  // self-reporting IE need not have a source to cite.
+  rebuttal_source_url: z
+    .union([z.string().url(), z.literal('')])
+    .default(''),
+  // Permissive: 1-5 OR null. Output mapping in base.ts normalizes null → 5
+  // so downstream code sees a SourceTier.
+  rebuttal_source_tier: z
+    .union([SourceTierSchema, z.null()])
+    .default(null),
+});
+
+export const RawSpecialistOutputSchema = z.discriminatedUnion('verdict', [
+  SourcedVerdictSchema,
+  InsufficientEvidenceVerdictSchema,
+]);
 
 // ─── Internal pipeline shapes ────────────────────────────────────────────────
 

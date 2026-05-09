@@ -450,3 +450,136 @@ describe('Stage 7: validateTiers — batch behavior', () => {
     expect(result[1]?.verdict_type).toBe('INSUFFICIENT_EVIDENCE');
   });
 });
+
+// ─── Schema: discriminated-union RawSpecialistOutputSchema ───────────────────
+
+describe('Schema: RawSpecialistOutputSchema discriminated union', () => {
+  it('accepts an INSUFFICIENT_EVIDENCE verdict with empty url and null tier', async () => {
+    const { RawSpecialistOutputSchema } = await import('../schemas.js');
+    const result = RawSpecialistOutputSchema.safeParse({
+      verdict: 'INSUFFICIENT_EVIDENCE',
+      provision_cited: 'FTC Green Guides §260.5(a)',
+      rebuttal_quote: '',
+      rebuttal_source_url: '',
+      rebuttal_source_tier: null,
+      reasoning:
+        'Available evidence does not directly address the lightweighting claim; SEC search results were inconclusive and EPA returned empty.',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      // discriminated union narrows verdict type
+      expect(result.data.verdict).toBe('INSUFFICIENT_EVIDENCE');
+      expect(result.data.provision_cited).toBe('FTC Green Guides §260.5(a)');
+      expect(result.data.rebuttal_source_url).toBe('');
+      expect(result.data.rebuttal_source_tier).toBeNull();
+    }
+  });
+
+  it('still rejects a SourcedVerdict (VERIFIED) with an empty rebuttal_source_url', async () => {
+    const { RawSpecialistOutputSchema } = await import('../schemas.js');
+    const result = RawSpecialistOutputSchema.safeParse({
+      verdict: 'VERIFIED',
+      provision_cited: 'FTC Green Guides §260.5(a)',
+      rebuttal_quote: 'q',
+      rebuttal_source_url: '',
+      rebuttal_source_tier: 1,
+      reasoning: 'r',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('still rejects a SourcedVerdict with null rebuttal_source_tier', async () => {
+    const { RawSpecialistOutputSchema } = await import('../schemas.js');
+    const result = RawSpecialistOutputSchema.safeParse({
+      verdict: 'VERIFIED',
+      provision_cited: 'FTC Green Guides §260.5(a)',
+      rebuttal_quote: 'q',
+      rebuttal_source_url: 'https://www.sec.gov/foo',
+      rebuttal_source_tier: null,
+      reasoning: 'r',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts the new longer length caps (rebuttal_quote ≤ 800, reasoning ≤ 600)', async () => {
+    const { RawSpecialistOutputSchema } = await import('../schemas.js');
+    const result = RawSpecialistOutputSchema.safeParse({
+      verdict: 'VERIFIED',
+      provision_cited: 'p',
+      rebuttal_quote: 'q'.repeat(800),
+      rebuttal_source_url: 'https://www.sec.gov/foo',
+      rebuttal_source_tier: 1,
+      reasoning: 'r'.repeat(600),
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+// ─── Stage 7: self-classified IE preserves provision_cited ───────────────────
+
+describe('Stage 7: self-classified IE short-circuit', () => {
+  it('preserves provision_cited and reasoning on a self-classified IE verdict', () => {
+    const ieVerdict: Verdict = {
+      claim_id: 'claim-1',
+      verdict_type: 'INSUFFICIENT_EVIDENCE',
+      provision_cited: 'FTC Green Guides §260.5(a)',
+      rebuttal_quote: '',
+      rebuttal_source_url: '',
+      rebuttal_source_tier: 5, // post-normalization from null
+      reasoning:
+        'Available evidence does not directly address the lightweighting claim',
+    };
+
+    const result = validateVerdict(ieVerdict);
+
+    expect(result.verdict_type).toBe('INSUFFICIENT_EVIDENCE');
+    expect(result.provision_cited).toBe('FTC Green Guides §260.5(a)');
+    expect(result.reasoning).toContain('lightweighting');
+    expect(result.downgrade_reason).toBe(
+      VALIDATION_REASONS.SELF_REPORTED_IE,
+    );
+  });
+
+  it('still downgrades a self-classified IE verdict with empty provision_cited', () => {
+    const ieVerdict: Verdict = {
+      claim_id: 'claim-1',
+      verdict_type: 'INSUFFICIENT_EVIDENCE',
+      provision_cited: '',
+      rebuttal_quote: '',
+      rebuttal_source_url: '',
+      rebuttal_source_tier: 5,
+      reasoning: 'r',
+    };
+
+    const result = validateVerdict(ieVerdict);
+    expect(result.verdict_type).toBe('INSUFFICIENT_EVIDENCE');
+    expect(result.downgrade_reason).toBe(VALIDATION_REASONS.EMPTY_PROVISION);
+  });
+
+  it('preserves an existing downgrade_reason on the IE verdict if already set', () => {
+    const ieVerdict: Verdict = {
+      claim_id: 'claim-1',
+      verdict_type: 'INSUFFICIENT_EVIDENCE',
+      provision_cited: 'p',
+      rebuttal_quote: '',
+      rebuttal_source_url: '',
+      rebuttal_source_tier: 5,
+      reasoning: 'r',
+      downgrade_reason: 'self-consistency check failed',
+    };
+    const result = validateVerdict(ieVerdict);
+    expect(result.downgrade_reason).toBe('self-consistency check failed');
+  });
+
+  it('honesty-gate property: a VERIFIED verdict with Tier 4 still downgrades', () => {
+    // Regression check — the IE short-circuit must not weaken the gate
+    // for SourcedVerdict shapes.
+    const verified = makeVerdict({
+      verdict_type: 'VERIFIED',
+      rebuttal_source_tier: 4,
+    });
+    const result = validateVerdict(verified);
+    expect(result.verdict_type).toBe('INSUFFICIENT_EVIDENCE');
+    expect(result.downgrade_reason).toBe(VALIDATION_REASONS.TIER);
+  });
+});

@@ -218,8 +218,21 @@ Respond in JSON only:
   }
 
   const v = validated.data;
+
+  // The IE branch of the discriminated union allows null tier and empty URL.
+  // Normalize null tier → 5 so downstream SpecialistOutput / Verdict types see
+  // a number, and so the receipt's tier field is stable. The verdict_type is
+  // already 'INSUFFICIENT_EVIDENCE', so Stage 7's tier check (>=4) would
+  // downgrade-to-IE redundantly — but we want Stage 7 to leave self-classified
+  // IE alone so the real provision_cited and reasoning are preserved in the
+  // receipt rather than overwritten with "output validation failed".
+  const tier =
+    v.verdict === 'INSUFFICIENT_EVIDENCE' && v.rebuttal_source_tier === null
+      ? 5
+      : v.rebuttal_source_tier ?? 5;
+
   dlogAccept(
-    `specialist=${config.audit_type} claim=${claim.id} verdict=${v.verdict} tier=${v.rebuttal_source_tier} url=${v.rebuttal_source_url}`,
+    `specialist=${config.audit_type} claim=${claim.id} verdict=${v.verdict} tier=${tier} url=${v.rebuttal_source_url}`,
   );
   return {
     output: {
@@ -227,7 +240,7 @@ Respond in JSON only:
       provision_cited: v.provision_cited,
       rebuttal_quote: v.rebuttal_quote,
       rebuttal_source_url: v.rebuttal_source_url,
-      rebuttal_source_tier: v.rebuttal_source_tier,
+      rebuttal_source_tier: tier as 1 | 2 | 3 | 4 | 5,
       reasoning: v.reasoning,
     },
     cost_usd: cost,
