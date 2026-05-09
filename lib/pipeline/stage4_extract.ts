@@ -34,6 +34,8 @@ const SYSTEM_PROMPT = `You extract environmental claims from brand marketing cop
 
 ONLY extract claims that explicitly state environmental, sustainability, climate, recycling, sourcing, or emissions properties of THIS product or its manufacturer.
 
+Brand pages often present claims as short bullets, badges, certification mentions, or one-line headers (e.g. "Fair Trade Certified", "100% recycled polyester", "B Corp since 2012", "Carbon neutral by 2030"). These all count as claims if they make a specific environmental, sustainability, climate, recycling, sourcing, or emissions assertion about the product or manufacturer. Do not require full sentences. Treat each bullet, badge, or short header as its own candidate claim.
+
 DO NOT extract:
 - Generic marketing language ("premium", "high quality", "best")
 - Health claims unrelated to environment ("low fat", "organic" only if used as health rather than environmental claim)
@@ -56,7 +58,27 @@ Output JSON array. Each claim:
 }
 
 If no environmental claims exist, return [].
-Output JSON only. No prose, no markdown fences.`;
+Output JSON only. No prose, no markdown fences.
+
+EXAMPLE 1 — verbose ESG paragraph yielding 1 claim
+Input:
+"Our 2030 sustainability strategy commits us to source 100% of our cotton from regenerative farms by the end of the decade, an ambitious target that builds on years of investment in supplier programs."
+
+Output:
+[{"id":"claim-1","quote":"source 100% of our cotton from regenerative farms by the end of the decade","type_hint":"factual","source_url":"<source>"}]
+
+EXAMPLE 2 — bulleted product page yielding 3 claims
+Input:
+"• Fair Trade Certified sewing
+• Made with recycled polyester
+• 1% for the Planet member since 1985"
+
+Output:
+[
+  {"id":"claim-1","quote":"Fair Trade Certified sewing","type_hint":"certification","source_url":"<source>"},
+  {"id":"claim-2","quote":"Made with recycled polyester","type_hint":"qualitative","source_url":"<source>"},
+  {"id":"claim-3","quote":"1% for the Planet member since 1985","type_hint":"certification","source_url":"<source>"}
+]`;
 
 function sha256(s: string): string {
   return crypto.createHash('sha256').update(s).digest('hex');
