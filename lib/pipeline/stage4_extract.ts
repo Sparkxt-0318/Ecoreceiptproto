@@ -25,6 +25,11 @@ import {
 } from './llm.js';
 import type { Claim, Product } from './types.js';
 
+const DEBUG = process.env.PIPELINE_DEBUG === '1';
+function dlog(...args: unknown[]): void {
+  if (DEBUG) console.error('[stage4:extract]', ...args);
+}
+
 const SYSTEM_PROMPT = `You extract environmental claims from brand marketing copy.
 
 ONLY extract claims that explicitly state environmental, sustainability, climate, recycling, sourcing, or emissions properties of THIS product or its manufacturer.
@@ -71,7 +76,11 @@ export async function extractClaims(
 ): Promise<ExtractClaimsResult> {
   const t0 = Date.now();
 
+  dlog(`product=${product.name} content_length=${brandSiteContent?.length ?? 0}`);
+  dlog(`first_500_chars="${(brandSiteContent ?? '').slice(0, 500).replace(/\n/g, ' ')}"`);
+
   if (!brandSiteContent || brandSiteContent.trim().length === 0) {
+    dlog('→ empty content, short-circuit returning []');
     return { claims: [], cost_usd: 0, duration_ms: 0 };
   }
 
@@ -94,11 +103,13 @@ ${brandSiteContent}`;
   const parsed = safeJsonParse<unknown>(text);
 
   if (parsed === null) {
+    dlog(`→ JSON parse failed; raw_llm_response="${text.slice(0, 1000).replace(/\n/g, ' ')}"`);
     return { claims: [], cost_usd: cost, duration_ms: Date.now() - t0 };
   }
 
   const rawClaims = RawClaimsArraySchema.safeParse(parsed);
   if (!rawClaims.success) {
+    dlog(`→ schema rejected; raw_parsed=${JSON.stringify(parsed).slice(0, 1000)}`);
     return { claims: [], cost_usd: cost, duration_ms: Date.now() - t0 };
   }
 
@@ -117,6 +128,11 @@ ${brandSiteContent}`;
     };
     const v = ClaimSchema.safeParse(candidate);
     if (v.success) claims.push(v.data);
+  }
+
+  dlog(`→ returning ${claims.length} claim(s) (raw=${rawClaims.data.length})`);
+  if (claims.length === 0 && rawClaims.data.length === 0) {
+    dlog(`  raw_llm_response="${text.slice(0, 1000).replace(/\n/g, ' ')}"`);
   }
 
   return { claims, cost_usd: cost, duration_ms: Date.now() - t0 };
