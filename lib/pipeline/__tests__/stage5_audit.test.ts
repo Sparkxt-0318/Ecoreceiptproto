@@ -1,10 +1,19 @@
 // Stage 5 (audit orchestrator) tests. Mocks specialists at the dispatch
 // table boundary so we don't need a real Anthropic client.
+//
+// Last describe block exercises runSpecialist directly with a mocked
+// Anthropic client to verify rate-limit retry semantics.
 
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type Anthropic from '@anthropic-ai/sdk';
 
 import { runAudit } from '../stage5_audit.js';
-import type { SpecialistResult } from '../specialists/base.js';
+import {
+  runSpecialist,
+  __setRetrySleep,
+  __resetRetrySleep,
+  type SpecialistResult,
+} from '../specialists/base.js';
 import type {
   Claim,
   EvidenceItem,
@@ -187,6 +196,33 @@ describe('Stage 5: runAudit', () => {
     expect(contra).toHaveBeenCalledTimes(1);
   });
 
+  it('caps concurrent specialist dispatches at 3 in flight', async () => {
+    // Build 9 claims that all hit the qualifier specialist.
+    const claims: Claim[] = Array.from({ length: 9 }, (_, i) =>
+      fakeClaim({ id: `claim-${i + 1}`, type_hint: 'qualitative' }),
+    );
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const qualifier = vi.fn().mockImplementation(async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      // Yield to the event loop so other workers actually pick up tasks
+      await new Promise((r) => setImmediate(r));
+      inFlight--;
+      return asResult(fakeOutput());
+    });
+
+    const result = await runAudit(claims, fakeEvidence(), {
+      specialists: { qualifier },
+    });
+
+    expect(qualifier).toHaveBeenCalledTimes(9);
+    expect(result.verdicts).toHaveLength(9);
+    expect(maxInFlight).toBeLessThanOrEqual(3);
+    expect(maxInFlight).toBeGreaterThan(0);
+  });
+
   it('passes a cert evidence slice that includes the certifier-lookup synthetic item', async () => {
     const claims: Claim[] = [
       fakeClaim({
@@ -214,5 +250,135 @@ describe('Stage 5: runAudit', () => {
 
     await runAudit(claims, fakeEvidence(), { specialists: { cert } });
     expect(cert).toHaveBeenCalled();
+  });
+});
+
+// ─── Specialist retry semantics ──────────────────────────────────────────────
+
+describe('runSpecialist: 429/529 retry with exponential backoff', () => {
+  // Replace the real sleep with an instant resolve so tests don't wait
+  // 2/4 seconds. Real-time backoff is verified by the smoke run, not unit tests.
+  beforeEach(() => __setRetrySleep(async () => undefined));
+  afterEach(() => __resetRetrySleep());
+
+  function rateLimitError(status: number): Error & { status: number } {
+    const err = new Error(`${status} rate_limit_error`) as Error & { status: number };
+    err.status = status;
+    return err;
+  }
+
+  function clientThatThrowsThen<T>(throws: Error[], thenReturns: T): {
+    client: Anthropic;
+    create: ReturnType<typeof vi.fn>;
+  } {
+    let calls = 0;
+    const create = vi.fn().mockImplementation(async () => {
+      const i = calls++;
+      if (i < throws.length) throw throws[i];
+      return thenReturns;
+    });
+    return { client: { messages: { create } } as unknown as Anthropic, create };
+  }
+
+  const validRespBody = {
+    content: [
+      {
+        type: 'text',
+        text: JSON.stringify({
+          verdict: 'VERIFIED',
+          provision_cited: 'FTC Green Guides §260.5(a)',
+          rebuttal_quote: 'evidence quote',
+          rebuttal_source_url: 'https://www.sec.gov/foo',
+          rebuttal_source_tier: 1,
+          reasoning: 'evidence directly substantiates claim',
+        }),
+      },
+    ],
+    usage: { input_tokens: 100, output_tokens: 50 },
+  };
+
+  it('retries on two 429s then succeeds on the third attempt', async () => {
+    const { client, create } = clientThatThrowsThen(
+      [rateLimitError(429), rateLimitError(429)],
+      validRespBody,
+    );
+    const claim: Claim = fakeClaim({ id: 'claim-1', type_hint: 'quantitative' });
+
+    const result = await runSpecialist(
+      { audit_type: 'quantitative', standard_name: 'FTC Green Guides §260.5' },
+      claim,
+      [],
+      client,
+    );
+
+    expect(create).toHaveBeenCalledTimes(3);
+    expect(result.output.verdict_type).toBe('VERIFIED');
+    expect(result.output.provision_cited).toBe('FTC Green Guides §260.5(a)');
+  });
+
+  it('retries on 529 (overloaded) the same way as 429', async () => {
+    const { client, create } = clientThatThrowsThen([rateLimitError(529)], validRespBody);
+    const claim: Claim = fakeClaim({ id: 'claim-1', type_hint: 'quantitative' });
+
+    const result = await runSpecialist(
+      { audit_type: 'quantitative', standard_name: 'FTC Green Guides §260.5' },
+      claim,
+      [],
+      client,
+    );
+
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(result.output.verdict_type).toBe('VERIFIED');
+  });
+
+  it('falls through to synthetic INSUFFICIENT after three 429s', async () => {
+    const create = vi.fn().mockRejectedValue(rateLimitError(429));
+    const client = { messages: { create } } as unknown as Anthropic;
+    const claim: Claim = fakeClaim({ id: 'claim-1', type_hint: 'quantitative' });
+
+    const result = await runSpecialist(
+      { audit_type: 'quantitative', standard_name: 'FTC Green Guides §260.5' },
+      claim,
+      [],
+      client,
+    );
+
+    expect(create).toHaveBeenCalledTimes(3); // initial + 2 retries
+    expect(result.output.verdict_type).toBe('INSUFFICIENT_EVIDENCE');
+    expect(result.output.provision_cited).toBe('output validation failed');
+  });
+
+  it('does NOT retry on a 400 client error', async () => {
+    const err = new Error('400 invalid request') as Error & { status: number };
+    err.status = 400;
+    const create = vi.fn().mockRejectedValue(err);
+    const client = { messages: { create } } as unknown as Anthropic;
+    const claim: Claim = fakeClaim({ id: 'claim-1', type_hint: 'quantitative' });
+
+    const result = await runSpecialist(
+      { audit_type: 'quantitative', standard_name: 'FTC Green Guides §260.5' },
+      claim,
+      [],
+      client,
+    );
+
+    expect(create).toHaveBeenCalledTimes(1); // no retry
+    expect(result.output.verdict_type).toBe('INSUFFICIENT_EVIDENCE');
+  });
+
+  it('does NOT retry on a generic non-status error', async () => {
+    const create = vi.fn().mockRejectedValue(new Error('network blew up'));
+    const client = { messages: { create } } as unknown as Anthropic;
+    const claim: Claim = fakeClaim({ id: 'claim-1', type_hint: 'quantitative' });
+
+    const result = await runSpecialist(
+      { audit_type: 'quantitative', standard_name: 'FTC Green Guides §260.5' },
+      claim,
+      [],
+      client,
+    );
+
+    expect(create).toHaveBeenCalledTimes(1); // no retry
+    expect(result.output.verdict_type).toBe('INSUFFICIENT_EVIDENCE');
   });
 });

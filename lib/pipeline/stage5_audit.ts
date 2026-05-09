@@ -1,8 +1,14 @@
-// Stage 5 — Six-specialist parallel audit + Stage 5b self-consistency.
+// Stage 5 — Six-specialist concurrency-capped audit + Stage 5b self-consistency.
 //
-// Maps each claim's type_hint to one specialist, dispatches in parallel,
-// stitches claim_ids onto the outputs, and runs the self-consistency check
-// on any contra verdict that returned CONTRADICTED_BY_PRIMARY.
+// Maps each claim's type_hint to one specialist, dispatches with at most
+// AUDIT_CONCURRENCY (3) in flight at once, stitches claim_ids onto the
+// outputs, and runs the self-consistency check on any contra verdict that
+// returned CONTRADICTED_BY_PRIMARY.
+//
+// Concurrency cap is the upstream half of rate-limit handling; the
+// downstream half is the 429/529 retry-with-backoff inside specialists/base.
+// Together they protect against Anthropic free-tier RPM stampedes that
+// previously caused 71% specialist-rejection rates.
 //
 // Critical: only specialists for which there are matching claims actually
 // fire. Empty claims of a given type_hint → that specialist never runs.
@@ -97,7 +103,40 @@ export type AuditDeps = {
   specialists?: Partial<SpecialistTable>;
 };
 
+// Cap on concurrent specialist dispatches. Tuned for the Anthropic free-tier
+// 5 RPM Haiku ceiling (with 3 in flight, the 2-second per-call latency means
+// we land roughly at 4-5 RPM — plus the 429 retry handles spillover).
+const AUDIT_CONCURRENCY = 3;
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Run `fn(item)` for each item with at most `limit` invocations in flight.
+ * Returns results in input order. Rejections are surfaced — callers using
+ * Promise.allSettled-style handling should wrap fn() to catch errors.
+ */
+async function runWithConcurrency<T, R>(
+  items: T[],
+  fn: (item: T) => Promise<R>,
+  limit: number,
+): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = new Array(items.length);
+  let cursor = 0;
+  const workerCount = Math.min(Math.max(1, limit), items.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (cursor < items.length) {
+      const i = cursor++;
+      try {
+        const value = await fn(items[i]!);
+        results[i] = { status: 'fulfilled', value };
+      } catch (reason) {
+        results[i] = { status: 'rejected', reason };
+      }
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
 
 function buildEvidenceForClaim(claim: Claim, evidence: RawEvidence): EvidenceItem[] {
   const sources = EVIDENCE_FILTERS[claim.type_hint];
@@ -138,20 +177,24 @@ export async function runAudit(
   type Dispatch = {
     claim: Claim;
     specialist: SpecialistName;
-    promise: Promise<SpecialistResult>;
   };
 
-  const dispatches: Dispatch[] = claims.map((claim) => {
-    const specialist = TYPE_TO_SPECIALIST[claim.type_hint];
-    const slice = buildEvidenceForClaim(claim, evidence);
-    return {
-      claim,
-      specialist,
-      promise: table[specialist](claim, slice, deps.client),
-    };
-  });
+  // Build lazy dispatch descriptors — promises are NOT created until each
+  // task is actually picked up by the concurrency limiter. Eagerly creating
+  // promises here would defeat the cap.
+  const dispatches: Dispatch[] = claims.map((claim) => ({
+    claim,
+    specialist: TYPE_TO_SPECIALIST[claim.type_hint],
+  }));
 
-  const settled = await Promise.allSettled(dispatches.map((d) => d.promise));
+  const settled = await runWithConcurrency(
+    dispatches,
+    (d) => {
+      const slice = buildEvidenceForClaim(d.claim, evidence);
+      return table[d.specialist](d.claim, slice, deps.client);
+    },
+    AUDIT_CONCURRENCY,
+  );
 
   let totalCost = 0;
   const verdicts: Verdict[] = [];

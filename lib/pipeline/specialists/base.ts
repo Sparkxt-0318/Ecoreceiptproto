@@ -25,6 +25,58 @@ function dlogReject(...args: unknown[]): void {
 function dlogAccept(...args: unknown[]): void {
   if (DEBUG) console.error('[specialist:base:accepted]', ...args);
 }
+function dlogRetry(...args: unknown[]): void {
+  if (DEBUG) console.error('[specialist:base:retry]', ...args);
+}
+
+// Exponential backoff retry on Anthropic 429 (rate limit) / 529 (overloaded).
+// Caps at 3 attempts (initial + 2 retries with 2s, 4s sleeps). Anything else
+// — schema validation errors, 4xx client errors, network errors — is not
+// retryable: failing fast lets the synthetic INSUFFICIENT placeholder fire
+// quickly rather than wasting seconds on a doomed call.
+//
+// Sleep helper is overridable so tests can swap in a fake.
+const RETRYABLE_STATUSES = new Set<number>([429, 529]);
+const MAX_RETRY_ATTEMPTS = 3;
+const RETRY_BASE_MS = 2000;
+
+let sleepFn: (ms: number) => Promise<void> = (ms) =>
+  new Promise((r) => setTimeout(r, ms));
+
+/** Internal hook for tests — replace the sleep implementation. */
+export function __setRetrySleep(fn: (ms: number) => Promise<void>): void {
+  sleepFn = fn;
+}
+
+/** Internal hook for tests — restore real timers. */
+export function __resetRetrySleep(): void {
+  sleepFn = (ms) => new Promise((r) => setTimeout(r, ms));
+}
+
+async function callWithRetry<T>(
+  fn: () => Promise<T>,
+  context: string,
+): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= MAX_RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      const status =
+        (err as { status?: number })?.status ??
+        (err as { response?: { status?: number } })?.response?.status;
+      const retryable = status !== undefined && RETRYABLE_STATUSES.has(status);
+      if (!retryable || attempt === MAX_RETRY_ATTEMPTS) throw err;
+      const backoffMs = RETRY_BASE_MS * Math.pow(2, attempt - 1);
+      dlogRetry(
+        `${context} attempt=${attempt} status=${status} backoff_ms=${backoffMs}`,
+      );
+      await sleepFn(backoffMs);
+    }
+  }
+  throw lastErr;
+}
 
 export type SpecialistResult = {
   output: SpecialistOutput;
@@ -99,13 +151,17 @@ Respond in JSON only:
   let rawText = '';
 
   try {
-    const resp = await client.messages.create({
-      model: HAIKU_MODEL,
-      max_tokens: 600,
-      temperature: 0,
-      system,
-      messages: [{ role: 'user', content: user }],
-    });
+    const resp = await callWithRetry(
+      () =>
+        client.messages.create({
+          model: HAIKU_MODEL,
+          max_tokens: 600,
+          temperature: 0,
+          system,
+          messages: [{ role: 'user', content: user }],
+        }),
+      `specialist=${config.audit_type} claim=${claim.id}`,
+    );
     cost = computeHaikuCost(resp.usage.input_tokens, resp.usage.output_tokens);
     rawText = extractText(resp);
     parsed = safeJsonParse(rawText);
