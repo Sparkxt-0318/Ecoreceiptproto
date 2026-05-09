@@ -136,6 +136,14 @@
     "land_m2_median": 0.0,
     "_source": "ICCT short-haul per-passenger-km, 2020"
   },
+  "transport.air.passenger": {
+    "co2e_kg_median": 250.0,
+    "co2e_kg_p10": 100.0,
+    "co2e_kg_p90": 500.0,
+    "water_l_median": 50.0,
+    "land_m2_median": 0.0,
+    "_source": "Our World in Data 'Climate change and flying', 2022; per-flight average across short-/medium-haul (avg 1000 km × 0.246 kg/passenger-km median)"
+  },
   "beauty.cosmetic.lipstick": {
     "co2e_kg_median": 1.2,
     "co2e_kg_p10": 0.8,
