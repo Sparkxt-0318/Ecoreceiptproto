@@ -12,7 +12,7 @@ import {
   extractText,
   getDefaultClient,
   HAIKU_MODEL,
-  safeJsonParse,
+  stripCodeFences,
   type LlmAnthropic,
 } from '../llm.js';
 import { RawSpecialistOutputSchema } from '../schemas.js';
@@ -27,6 +27,58 @@ function dlogAccept(...args: unknown[]): void {
 }
 function dlogRetry(...args: unknown[]): void {
   if (DEBUG) console.error('[specialist:base:retry]', ...args);
+}
+function dlogRepair(...args: unknown[]): void {
+  if (DEBUG) console.error('[specialist:base:repaired]', ...args);
+}
+
+/**
+ * Repair the most common LLM JSON-emission failure: a verbatim-quoted phrase
+ * inside a string value with literal double quotes left unescaped.
+ * Example failure mode (Heinz claim-4 in the Phase-7 diagnostic):
+ *   "rebuttal_quote": "Waste diversion from landfills" is listed as ..."
+ *                                                    ^ unescaped
+ *
+ * Strategy: find `"<key>": "<head>"<middle>"` where the inner closing quote
+ * is followed by an *alphanumeric* character (i.e. continuation prose, not a
+ * JSON-syntactic boundary like `,` or `}`). That constraint avoids false
+ * positives on well-formed sibling fields, where the next char after the
+ * closing quote is `,` or whitespace+`,`.
+ *
+ * Limited to the three string fields where this failure empirically happens.
+ * Intentionally minimal — broader JSON repair is out of scope.
+ */
+export function repairJsonString(raw: string): string {
+  // [^"\\]|\\. = any non-quote-non-backslash char OR an escape sequence.
+  // The (?<!\\) negative lookbehind guards the inner closing-quote match so
+  // we don't fire on already-escaped \" sequences.
+  return raw.replace(
+    /"(rebuttal_quote|reasoning|provision_cited)"\s*:\s*"((?:[^"\\]|\\.)*?)(?<!\\)"\s*([A-Za-z](?:[^"\\]|\\.)*?)(?<!\\)"/g,
+    (_, key, before, after) => `"${key}": "${before}\\" ${after}"`,
+  );
+}
+
+/**
+ * Parse JSON from an LLM response. First strips code fences and tries
+ * JSON.parse; on failure, runs one repair pass for the common unescaped-
+ * quote pattern and tries again. Returns null on total failure (matches
+ * the existing safeJsonParse contract).
+ */
+export function parseJsonWithRepair<T = unknown>(raw: string, ctx?: string): T | null {
+  const stripped = stripCodeFences(raw);
+  try {
+    return JSON.parse(stripped) as T;
+  } catch {
+    // fall through to repair pass
+  }
+  try {
+    const repaired = repairJsonString(stripped);
+    const parsed = JSON.parse(repaired) as T;
+    if (ctx) dlogRepair(ctx);
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 // Exponential backoff retry on Anthropic 429 (rate limit) / 529 (overloaded).
@@ -94,7 +146,8 @@ const RULES = `Rules:
 2. Output verdict ∈ {VERIFIED, FAILED, CONTRADICTED_BY_PRIMARY, INSUFFICIENT_EVIDENCE}.
 3. If the evidence provided does not DIRECTLY address the claim, output INSUFFICIENT_EVIDENCE. Do NOT speculate. Do NOT generalize.
 4. The rebuttal_source_url MUST be a URL present in the evidence input. Never invent URLs.
-5. Quote the rebuttal source verbatim, max 50 words.`;
+5. Quote the rebuttal source verbatim, max 50 words.
+6. In rebuttal_quote, do NOT include literal double-quote characters. If you must quote a verbatim phrase, omit the quotation marks around it. JSON validity is mandatory.`;
 
 const SYNTHETIC_INSUFFICIENT: SpecialistOutput = {
   verdict_type: 'INSUFFICIENT_EVIDENCE',
@@ -164,7 +217,10 @@ Respond in JSON only:
     );
     cost = computeHaikuCost(resp.usage.input_tokens, resp.usage.output_tokens);
     rawText = extractText(resp);
-    parsed = safeJsonParse(rawText);
+    parsed = parseJsonWithRepair(
+      rawText,
+      `specialist=${config.audit_type} claim=${claim.id}`,
+    );
   } catch (e) {
     dlogReject(
       `specialist=${config.audit_type} claim=${claim.id} reason=llm_call_threw error="${(e as Error).message}"`,

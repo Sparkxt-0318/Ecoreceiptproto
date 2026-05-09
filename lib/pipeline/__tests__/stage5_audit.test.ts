@@ -9,6 +9,8 @@ import type Anthropic from '@anthropic-ai/sdk';
 
 import { runAudit } from '../stage5_audit.js';
 import {
+  parseJsonWithRepair,
+  repairJsonString,
   runSpecialist,
   __setRetrySleep,
   __resetRetrySleep,
@@ -380,5 +382,48 @@ describe('runSpecialist: 429/529 retry with exponential backoff', () => {
 
     expect(create).toHaveBeenCalledTimes(1); // no retry
     expect(result.output.verdict_type).toBe('INSUFFICIENT_EVIDENCE');
+  });
+});
+
+// ─── Defensive JSON repair ───────────────────────────────────────────────────
+
+describe('parseJsonWithRepair: unescaped-quote repair', () => {
+  it('parses well-formed JSON unchanged', () => {
+    const ok = JSON.stringify({ verdict: 'VERIFIED', rebuttal_quote: 'fine' });
+    expect(parseJsonWithRepair(ok)).toEqual({
+      verdict: 'VERIFIED',
+      rebuttal_quote: 'fine',
+    });
+  });
+
+  it('repairs the exact Heinz claim-4 unescaped-quote pattern', () => {
+    // Verbatim shape from /tmp/diagnose_heinz.log
+    const raw = `\`\`\`json
+{
+  "verdict": "INSUFFICIENT_EVIDENCE",
+  "provision_cited": "FTC Green Guides §260.4(b)",
+  "rebuttal_quote": "Waste diversion from landfills" is listed as a general company commitment without specific substantiation",
+  "rebuttal_source_url": "https://kraftheinz.com/__llm_fallback__",
+  "rebuttal_source_tier": 4,
+  "reasoning": "Evidence states a commitment but provides no quantifiable data."
+}
+\`\`\``;
+    const parsed = parseJsonWithRepair<Record<string, unknown>>(raw);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.verdict).toBe('INSUFFICIENT_EVIDENCE');
+    expect(parsed!.rebuttal_quote).toContain('Waste diversion from landfills');
+    expect(parsed!.rebuttal_quote).toContain('general company commitment');
+  });
+
+  it('returns null when the repair regex cannot fix the input', () => {
+    // Unbalanced braces — repair regex doesn't touch this.
+    const broken = `{"verdict": "VERIFIED" "provision_cited": "p"}`;
+    expect(parseJsonWithRepair(broken)).toBeNull();
+  });
+
+  it('repairJsonString is a no-op on already-escaped input', () => {
+    const raw =
+      '{"rebuttal_quote": "Waste diversion from landfills\\" is listed as a general company commitment"}';
+    expect(repairJsonString(raw)).toBe(raw);
   });
 });
