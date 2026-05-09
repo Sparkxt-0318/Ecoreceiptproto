@@ -110,6 +110,38 @@ describe('Stage 7: validateVerdict — empty url check', () => {
   });
 });
 
+// ─── Test 2b — Tier validator: __llm_fallback__ rebuttal gets downgraded ────
+
+describe('Stage 7: validateVerdict — llm-summary fallback rejection', () => {
+  it('downgrades a verdict whose rebuttal_source_url cites the LLM-summary fallback sentinel', () => {
+    // arrange: structurally perfect Tier-1 verdict, except the rebuttal URL
+    // points at the synthetic fallback path. Stage 7 must not let synthetic
+    // training-knowledge content pose as primary evidence.
+    const verdict = makeVerdict({
+      rebuttal_source_tier: 1,
+      rebuttal_source_url: 'https://patagonia.com/__llm_fallback__',
+    });
+
+    const result = validateVerdict(verdict);
+
+    expect(result.verdict_type).toBe('INSUFFICIENT_EVIDENCE');
+    expect(result.downgrade_reason).toBe(VALIDATION_REASONS.LLM_FALLBACK);
+  });
+
+  it('also rejects when the token appears inside the path rather than at the end', () => {
+    const verdict = makeVerdict({
+      rebuttal_source_tier: 1,
+      rebuttal_source_url:
+        'https://patagonia.com/__llm_fallback__/cited-section#frag',
+    });
+
+    const result = validateVerdict(verdict);
+
+    expect(result.verdict_type).toBe('INSUFFICIENT_EVIDENCE');
+    expect(result.downgrade_reason).toBe(VALIDATION_REASONS.LLM_FALLBACK);
+  });
+});
+
 // ─── Test 3 — Tier validator: empty provision_cited gets downgraded ──────────
 
 describe('Stage 7: validateVerdict — empty provision check', () => {
