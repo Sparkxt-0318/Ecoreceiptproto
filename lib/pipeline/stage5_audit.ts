@@ -30,6 +30,7 @@ import type {
   ClaimType,
   EvidenceItem,
   EvidenceSource,
+  Product,
   RawEvidence,
   SpecialistOutput,
   Verdict,
@@ -101,6 +102,12 @@ export type AuditDeps = {
   client?: LlmAnthropic;
   /** Override individual specialists for testing. */
   specialists?: Partial<SpecialistTable>;
+  /**
+   * Product context — used by the cert specialist to look up known
+   * certifications by manufacturer name. Optional for backwards
+   * compatibility with tests that pre-date the cert-registry feature.
+   */
+  product?: Product;
 };
 
 // Cap on concurrent specialist dispatches. Tuned for the Anthropic free-tier
@@ -138,11 +145,15 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
-function buildEvidenceForClaim(claim: Claim, evidence: RawEvidence): EvidenceItem[] {
+function buildEvidenceForClaim(
+  claim: Claim,
+  evidence: RawEvidence,
+  product?: Product,
+): EvidenceItem[] {
   const sources = EVIDENCE_FILTERS[claim.type_hint];
   const sliced = sliceEvidence(evidence, sources);
   if (claim.type_hint === 'certification') {
-    return buildCertEvidenceSlice(claim, sliced);
+    return buildCertEvidenceSlice(claim, sliced, product?.manufacturer);
   }
   return sliced;
 }
@@ -190,7 +201,7 @@ export async function runAudit(
   const settled = await runWithConcurrency(
     dispatches,
     (d) => {
-      const slice = buildEvidenceForClaim(d.claim, evidence);
+      const slice = buildEvidenceForClaim(d.claim, evidence, deps.product);
       return table[d.specialist](d.claim, slice, deps.client);
     },
     AUDIT_CONCURRENCY,
@@ -227,7 +238,7 @@ export async function runAudit(
       dispatch.specialist === 'contra' &&
       verdict.verdict_type === 'CONTRADICTED_BY_PRIMARY'
     ) {
-      const slice = buildEvidenceForClaim(dispatch.claim, evidence);
+      const slice = buildEvidenceForClaim(dispatch.claim, evidence, deps.product);
       const reRun = async (): Promise<SpecialistOutput> => {
         const r = await table.contra(dispatch.claim, slice, deps.client);
         totalCost += r.cost_usd;

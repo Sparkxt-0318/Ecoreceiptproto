@@ -225,7 +225,7 @@ describe('Stage 5: runAudit', () => {
     expect(maxInFlight).toBeGreaterThan(0);
   });
 
-  it('passes a cert evidence slice that includes the certifier-lookup synthetic item', async () => {
+  it('passes a cert evidence slice with not_fetched_in_mvp pointer when manufacturer unknown', async () => {
     const claims: Claim[] = [
       fakeClaim({
         id: 'claim-1',
@@ -236,7 +236,7 @@ describe('Stage 5: runAudit', () => {
     const cert = vi
       .fn()
       .mockImplementation(async (_claim: Claim, evidence: EvidenceItem[]) => {
-        // Assert the synthetic lookup item is present.
+        // No `product` passed in deps → cert falls back to lookup-pointer mode.
         const lookupItem = evidence.find(
           (it) =>
             typeof it.data === 'object' &&
@@ -251,6 +251,83 @@ describe('Stage 5: runAudit', () => {
       });
 
     await runAudit(claims, fakeEvidence(), { specialists: { cert } });
+    expect(cert).toHaveBeenCalled();
+  });
+
+  it('passes a cert evidence slice with real registry records when manufacturer is in KNOWN_CERTIFICATIONS', async () => {
+    const claims: Claim[] = [
+      fakeClaim({
+        id: 'claim-1',
+        type_hint: 'certification',
+        quote: 'B Corp Certified since 2012.',
+      }),
+    ];
+    const cert = vi
+      .fn()
+      .mockImplementation(async (_claim: Claim, evidence: EvidenceItem[]) => {
+        const registryItem = evidence.find(
+          (it) =>
+            typeof it.data === 'object' &&
+            it.data !== null &&
+            'registry_records' in (it.data as object),
+        );
+        expect(registryItem).toBeDefined();
+        const records = (
+          registryItem!.data as { registry_records: Array<{ cert_name: string; registry_url: string }> }
+        ).registry_records;
+        expect(records.length).toBe(3); // B Corp, Fair Trade, 1% for the Planet
+        expect(records.some((r) => r.cert_name === 'B Corporation')).toBe(true);
+        expect(records[0]?.registry_url).toContain('bcorporation.net');
+        expect(registryItem!.tier).toBe(2);
+        return asResult(fakeOutput());
+      });
+
+    await runAudit(claims, fakeEvidence(), {
+      specialists: { cert },
+      product: {
+        id: 'p',
+        name: 'Patagonia Better Sweater',
+        manufacturer: 'Patagonia, Inc.',
+        category: 'apparel.fleece.synthetic',
+      },
+    });
+    expect(cert).toHaveBeenCalled();
+  });
+
+  it('passes a cert evidence slice with empty registry_records when manufacturer is verifiably absent (Kraft Heinz, no B Corp)', async () => {
+    const claims: Claim[] = [
+      fakeClaim({
+        id: 'claim-1',
+        type_hint: 'certification',
+        quote: 'B Corp Certified.',
+      }),
+    ];
+    const cert = vi
+      .fn()
+      .mockImplementation(async (_claim: Claim, evidence: EvidenceItem[]) => {
+        const registryItem = evidence.find(
+          (it) =>
+            typeof it.data === 'object' &&
+            it.data !== null &&
+            'registry_records' in (it.data as object),
+        );
+        expect(registryItem).toBeDefined();
+        const records = (registryItem!.data as { registry_records: unknown[] })
+          .registry_records;
+        expect(records).toEqual([]); // empty = "verifiably absent"
+        expect(registryItem!.tier).toBe(2);
+        return asResult(fakeOutput());
+      });
+
+    await runAudit(claims, fakeEvidence(), {
+      specialists: { cert },
+      product: {
+        id: 'p',
+        name: 'Heinz Tomato Ketchup',
+        manufacturer: 'Kraft Heinz',
+        category: 'food.condiment.ketchup',
+      },
+    });
     expect(cert).toHaveBeenCalled();
   });
 });

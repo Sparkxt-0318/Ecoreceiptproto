@@ -118,7 +118,7 @@ export async function runPipeline(
 
   // ─── Stages 5 + 6 — audit (with claims) and footprint (always) ────────────
   const t5 = Date.now();
-  const audit = await runAudit(extraction.claims, evidence, { client });
+  const audit = await runAudit(extraction.claims, evidence, { client, product });
   trace('audit', t5, audit.cost_usd, true);
 
   const t6 = Date.now();
