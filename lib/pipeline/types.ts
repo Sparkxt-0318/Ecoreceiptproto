@@ -59,6 +59,13 @@ export type EvidenceItem = {
   fetched_at: string;
   /** sha256 hex (64 chars) of the canonical raw payload at fetch time. Stable across runs for the same upstream content. */
   content_hash: string;
+  /**
+   * Set to 'llm_summary' when the item came from the LLM-knowledge fallback
+   * path (brand site unreachable / blocked). Stage 4 may consume it as
+   * extraction input; Stage 7 must reject any verdict that cites a fallback
+   * URL as its rebuttal source. Absent on normal fetches.
+   */
+  provenance?: 'llm_summary';
 };
 
 export type RawEvidence = {

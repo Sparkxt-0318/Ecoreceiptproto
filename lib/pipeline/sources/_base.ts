@@ -50,6 +50,7 @@ export function buildItem(args: {
   url?: string;
   data: unknown;
   content_hash?: string;
+  provenance?: 'llm_summary';
 }): EvidenceItem {
   return {
     source: args.source,
@@ -59,6 +60,7 @@ export function buildItem(args: {
     data: args.data,
     fetched_at: new Date().toISOString(),
     content_hash: args.content_hash ?? PLACEHOLDER_HASH,
+    ...(args.provenance ? { provenance: args.provenance } : {}),
   };
 }
 

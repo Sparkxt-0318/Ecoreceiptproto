@@ -10,6 +10,13 @@
 // Tight! Routing to checkout" page, ~1000 chars, zero environmental terms)
 // without resorting to fragile keyword blocklists.
 
+import {
+  computeHaikuCost,
+  extractText,
+  getDefaultClient,
+  HAIKU_MODEL,
+  type LlmAnthropic,
+} from '../llm.js';
 import type { Product } from '../types.js';
 import {
   buildItem,
@@ -18,6 +25,14 @@ import {
   sha256Hex,
   type Fetcher,
 } from './_base.js';
+
+/**
+ * Sentinel path component used in the URL of every LLM-summary fallback
+ * evidence item. Stage 7 (validateVerdict) rejects any rebuttal that cites
+ * a URL containing this token, ensuring training-knowledge content can never
+ * pose as primary evidence.
+ */
+export const LLM_FALLBACK_TOKEN = '__llm_fallback__';
 
 // Expanded path list: typical CPG sustainability/ESG slugs across multiple
 // CMS conventions. Order matters — most-common first.
@@ -110,10 +125,55 @@ function buildCandidates(product: Product): string[] {
   return deduped;
 }
 
+const LLM_SUMMARY_PROMPT = `Summarize the publicly known environmental and sustainability claims made by the named manufacturer about its products and operations.
+
+Source: your training knowledge only. Do not invent specifics. If you have no concrete knowledge, output an empty string.
+
+Format: plain text, ~500 words. Use short bulleted lines for individual claims/badges/certifications when applicable. Stay close to verifiable specifics — name certifications, numeric targets with their dates, recycled-content percentages, etc. Avoid marketing prose.`;
+
+export type BrandSiteDeps = {
+  fetcher?: Fetcher;
+  client?: LlmAnthropic;
+};
+
+async function llmSummaryFallback(
+  product: Product,
+  client: LlmAnthropic,
+): Promise<{ text: string; cost_usd: number }> {
+  try {
+    const resp = await client.messages.create({
+      model: HAIKU_MODEL,
+      max_tokens: 800,
+      temperature: 0,
+      system: LLM_SUMMARY_PROMPT,
+      messages: [
+        {
+          role: 'user',
+          content: `Manufacturer: ${product.manufacturer}\nProduct: ${product.name}\nCategory: ${product.category}`,
+        },
+      ],
+    });
+    const cost = computeHaikuCost(resp.usage.input_tokens, resp.usage.output_tokens);
+    const text = extractText(resp).trim();
+    return { text, cost_usd: cost };
+  } catch (e) {
+    dlog(`  llm_fallback error: ${(e as Error).message}`);
+    return { text: '', cost_usd: 0 };
+  }
+}
+
 export async function fetchBrandSite(
   product: Product,
-  fetcher: Fetcher = fetch,
+  fetcherOrDeps: Fetcher | BrandSiteDeps = fetch,
 ) {
+  // Backwards-compatible signature: callers may pass a bare Fetcher (the
+  // existing default) OR the structured BrandSiteDeps object when they want
+  // to inject an LLM client for fallback synthesis.
+  const fetcher: Fetcher =
+    typeof fetcherOrDeps === 'function' ? fetcherOrDeps : fetcherOrDeps.fetcher ?? fetch;
+  const client: LlmAnthropic | undefined =
+    typeof fetcherOrDeps === 'function' ? undefined : fetcherOrDeps.client;
+
   if (!product.manufacturer_domain) {
     return buildItem({
       source: 'brand_site',
@@ -174,10 +234,36 @@ export async function fetchBrandSite(
       // try next candidate
     }
   }
-  dlog('exhausted all candidates → empty');
+  dlog('exhausted all candidates; trying LLM-summary fallback');
+
+  // All candidates failed — try the LLM-knowledge fallback so Stage 4 still
+  // has something to extract claims from. The fallback URL contains
+  // LLM_FALLBACK_TOKEN; Stage 7 rejects any verdict citing that pattern as
+  // a rebuttal source, so this content can NEVER be used as primary evidence.
+  if (!client) {
+    dlog('no LLM client available → empty');
+    return buildItem({
+      source: 'brand_site',
+      status: 'empty',
+      data: { reason: 'no candidate returned substantive content; no llm fallback' },
+    });
+  }
+  const { text: llmText } = await llmSummaryFallback(product, client);
+  if (!llmText || llmText.length < SIGNAL_LENGTH) {
+    dlog(`llm fallback returned ${llmText.length} chars → empty`);
+    return buildItem({
+      source: 'brand_site',
+      status: 'empty',
+      data: { reason: 'llm fallback returned empty/thin' },
+    });
+  }
+  dlog(`llm fallback returned ${llmText.length} chars → accepted as fallback`);
   return buildItem({
     source: 'brand_site',
-    status: 'empty',
-    data: { reason: 'no candidate returned substantive content' },
+    status: 'ok',
+    url: `https://${product.manufacturer_domain}/${LLM_FALLBACK_TOKEN}`,
+    data: { text: llmText },
+    content_hash: sha256Hex(llmText),
+    provenance: 'llm_summary',
   });
 }

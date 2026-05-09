@@ -145,6 +145,7 @@ export const EvidenceItemSchema = z.object({
   data: z.unknown(),
   fetched_at: z.string().datetime(),
   content_hash: Sha256HexSchema,
+  provenance: z.literal('llm_summary').optional(),
 });
 
 export const RawEvidenceSchema = z.object({

@@ -8,6 +8,7 @@
 // `degraded: true` is set when 3+ sources returned non-ok status. Stage 9 uses
 // this to force confidence_grade='C'.
 
+import type { LlmAnthropic } from './llm.js';
 import { fetchAqueduct } from './sources/aqueduct.js';
 import { fetchEpaEnvirofacts } from './sources/epa_envirofacts.js';
 import { fetchNewsApi } from './sources/newsapi.js';
@@ -31,13 +32,19 @@ export type EvidenceFetchers = {
   aqueduct: (epaItem: EvidenceItem | null) => EvidenceItem | Promise<EvidenceItem>;
 };
 
-export function makeDefaultFetchers(fetcher: Fetcher = fetch): EvidenceFetchers {
+export function makeDefaultFetchers(
+  fetcher: Fetcher = fetch,
+  client?: LlmAnthropic,
+): EvidenceFetchers {
   return {
     openfoodfacts: (p) => fetchOpenFoodFacts(p, fetcher),
     sec_edgar: (p) => fetchSecEdgar(p, fetcher),
     epa_envirofacts: (p) => fetchEpaEnvirofacts(p, fetcher),
     newsapi: (p) => fetchNewsApi(p, fetcher),
-    brand_site: (p) => fetchBrandSite(p, fetcher),
+    // Brand-site fetcher uses the LLM client only when all HTTP candidates
+    // fail (training-knowledge fallback). When client is undefined, the
+    // fetcher returns 'empty' instead of falling back.
+    brand_site: (p) => fetchBrandSite(p, { fetcher, client }),
     aqueduct: (epa) => fetchAqueduct(epa),
   };
 }

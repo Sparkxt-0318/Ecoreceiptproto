@@ -15,7 +15,11 @@
 import { getCached, setCached } from './cache.js';
 import { getDefaultClient, type LlmAnthropic } from './llm.js';
 import { resolveProduct, type ResolveDeps } from './stage1_resolve.js';
-import { gatherEvidence, type EvidenceFetchers } from './stage3_evidence.js';
+import {
+  gatherEvidence,
+  makeDefaultFetchers,
+  type EvidenceFetchers,
+} from './stage3_evidence.js';
 import { extractClaims } from './stage4_extract.js';
 import { runAudit } from './stage5_audit.js';
 import { runFootprint } from './stage6_footprint.js';
@@ -97,8 +101,13 @@ export async function runPipeline(
   }
 
   // ─── Stage 3 — evidence ───────────────────────────────────────────────────
+  // Pass the LLM client into the default fetchers so the brand_site fetcher
+  // can synthesize a training-knowledge summary when every HTTP candidate
+  // fails. (Stage 7 ensures fallback content can never be cited as a
+  // rebuttal source, so this is safe to feed Stage 4.)
   const t3 = Date.now();
-  const evidence = await gatherEvidence(product, deps.fetchers);
+  const fetchers = deps.fetchers ?? makeDefaultFetchers(undefined, client);
+  const evidence = await gatherEvidence(product, fetchers);
   trace('evidence', t3, 0, !evidence.degraded);
 
   // ─── Stage 4 — claim extraction ───────────────────────────────────────────
