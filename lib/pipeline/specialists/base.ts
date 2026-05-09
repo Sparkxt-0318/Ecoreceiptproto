@@ -18,6 +18,14 @@ import {
 import { RawSpecialistOutputSchema } from '../schemas.js';
 import type { Claim, EvidenceItem, SpecialistOutput } from '../types.js';
 
+const DEBUG = process.env.PIPELINE_DEBUG === '1';
+function dlogReject(...args: unknown[]): void {
+  if (DEBUG) console.error('[specialist:base:rejected]', ...args);
+}
+function dlogAccept(...args: unknown[]): void {
+  if (DEBUG) console.error('[specialist:base:accepted]', ...args);
+}
+
 export type SpecialistResult = {
   output: SpecialistOutput;
   cost_usd: number;
@@ -88,6 +96,7 @@ Respond in JSON only:
 
   let cost = 0;
   let parsed: unknown;
+  let rawText = '';
 
   try {
     const resp = await client.messages.create({
@@ -98,8 +107,12 @@ Respond in JSON only:
       messages: [{ role: 'user', content: user }],
     });
     cost = computeHaikuCost(resp.usage.input_tokens, resp.usage.output_tokens);
-    parsed = safeJsonParse(extractText(resp));
-  } catch {
+    rawText = extractText(resp);
+    parsed = safeJsonParse(rawText);
+  } catch (e) {
+    dlogReject(
+      `specialist=${config.audit_type} claim=${claim.id} reason=llm_call_threw error="${(e as Error).message}"`,
+    );
     return {
       output: SYNTHETIC_INSUFFICIENT,
       cost_usd: cost,
@@ -108,6 +121,9 @@ Respond in JSON only:
   }
 
   if (!parsed) {
+    dlogReject(
+      `specialist=${config.audit_type} claim=${claim.id} reason=json_parse_failed raw_response=${JSON.stringify(rawText).slice(0, 2000)}`,
+    );
     return {
       output: SYNTHETIC_INSUFFICIENT,
       cost_usd: cost,
@@ -117,6 +133,27 @@ Respond in JSON only:
 
   const validated = RawSpecialistOutputSchema.safeParse(parsed);
   if (!validated.success) {
+    // Build a per-issue trace including the offending value at each path.
+    const issues = validated.error.issues.map((iss) => {
+      const pathStr = iss.path.join('.');
+      let valuePreview = '<unreadable>';
+      try {
+        const v = (parsed as Record<string, unknown>)[pathStr] ?? (parsed as unknown);
+        const s = typeof v === 'string' ? v : JSON.stringify(v);
+        if (s !== undefined) {
+          valuePreview =
+            s.length > 220
+              ? `"${s.slice(0, 100)}…[len=${s.length}]…${s.slice(-100)}"`
+              : s;
+        }
+      } catch {
+        // leave preview as <unreadable>
+      }
+      return `path=${pathStr || '(root)'} code=${iss.code} message="${iss.message}" value=${valuePreview}`;
+    });
+    dlogReject(
+      `specialist=${config.audit_type} claim=${claim.id} reason=schema_rejected\n  issues:\n    ${issues.join('\n    ')}\n  full_raw_response=${JSON.stringify(rawText)}`,
+    );
     return {
       output: SYNTHETIC_INSUFFICIENT,
       cost_usd: cost,
@@ -125,6 +162,9 @@ Respond in JSON only:
   }
 
   const v = validated.data;
+  dlogAccept(
+    `specialist=${config.audit_type} claim=${claim.id} verdict=${v.verdict} tier=${v.rebuttal_source_tier} url=${v.rebuttal_source_url}`,
+  );
   return {
     output: {
       verdict_type: v.verdict,
