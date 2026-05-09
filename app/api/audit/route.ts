@@ -21,6 +21,17 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 export async function POST(req: Request): Promise<Response> {
+  // Runtime env diagnostic — temporary; remove once root cause is confirmed.
+  // eslint-disable-next-line no-console
+  console.log('[/api/audit] runtime env check', {
+    has_anthropic_key: !!process.env.ANTHROPIC_API_KEY,
+    key_prefix: process.env.ANTHROPIC_API_KEY?.slice(0, 14) ?? '<undefined>',
+    vercel_env: process.env.VERCEL_ENV,
+    vercel_region: process.env.VERCEL_REGION,
+    node_env: process.env.NODE_ENV,
+    has_aws_key: !!process.env.AWS_ACCESS_KEY_ID,
+  });
+
   let input: PipelineInput;
 
   const contentType = req.headers.get('content-type') ?? '';
