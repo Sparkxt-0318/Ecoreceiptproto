@@ -1,7 +1,10 @@
 // Stage 1 — Resolve canonical Product identity from text or image input.
 //
 // Text path:
-//   1. Query OpenFoodFacts. If we get a product_name + brands, build Product directly.
+//   0. Pre-flight: ask Haiku to classify the input as 'product' / 'service' /
+//      'unclear'. Service queries (airline, hotel, bank, subscription) skip
+//      OpenFoodFacts and resolve directly from training knowledge.
+//   1. Product / unclear: query OpenFoodFacts. On hit, build Product directly.
 //   2. Else: ask Haiku (training knowledge, no web search in MVP) for the
 //      manufacturer/parent company + domain + category.
 //   3. If neither path yields a manufacturer, throw InsufficientProductDataError.
@@ -12,7 +15,8 @@
 //   2. confidence < 0.5 → throw.
 //   3. Continue with the text path using the vision-returned name.
 //
-// All external calls (OFF fetch, ESG probe) are injectable for tests.
+// All external calls (OFF fetch, ESG probe, classifier, service resolver) are
+// injectable for tests.
 
 import crypto from 'node:crypto';
 
@@ -197,12 +201,94 @@ async function lookupManufacturer(
   };
 }
 
+// ─── Service-mode classification + resolution ───────────────────────────────
+// Some queries (airline tickets, hotel stays, bank accounts, streaming
+// subscriptions) aren't physical retail products with UPCs and never appear
+// in OpenFoodFacts. Hitting OFF for them is wasted latency, and the LLM
+// manufacturer-lookup prompt is shaped for products and frequently returns
+// null. Branch on a cheap pre-flight classifier instead.
+
+export type InputKind = 'product' | 'service' | 'unclear';
+
+export type InputClassifier = (
+  query: string,
+  client: LlmAnthropic,
+) => Promise<{ kind: InputKind; cost_usd: number }>;
+
+const CLASSIFY_PROMPT = `Classify the input as one of: 'product' (physical retail item with a UPC, e.g. food, apparel, electronics), 'service' (airline, hotel, bank, subscription, experience), 'unclear'.
+
+Respond JSON only: {"kind": "product|service|unclear"}.`;
+
+export const defaultInputClassifier: InputClassifier = async (query, client) => {
+  const resp = await client.messages.create({
+    model: HAIKU_MODEL,
+    max_tokens: 50,
+    temperature: 0,
+    system: CLASSIFY_PROMPT,
+    messages: [{ role: 'user', content: query }],
+  });
+  const cost = computeHaikuCost(resp.usage.input_tokens, resp.usage.output_tokens);
+  const parsed = safeJsonParse<{ kind?: string }>(extractText(resp));
+  const kind: InputKind =
+    parsed?.kind === 'product' || parsed?.kind === 'service' ? parsed.kind : 'unclear';
+  return { kind, cost_usd: cost };
+};
+
+const SERVICE_RESOLVE_PROMPT = `Identify the operator/manufacturer of a service from training knowledge.
+
+Output JSON only:
+{"name": "<canonical service name>", "manufacturer": "<operator company>", "manufacturer_domain": "<example.com>", "category": "<dotted.category.path>"}
+
+If you don't recognize the operator with high confidence, output:
+{"name": null, "manufacturer": null, "manufacturer_domain": null, "category": null}
+
+Examples of categories: transport.air.passenger, transport.rail.passenger, hospitality.hotel.lodging, finance.bank.consumer, media.streaming.subscription. Use the closest dotted path; do not guess if uncertain.
+
+Do not guess. "I don't know" is acceptable.`;
+
+export type ServiceResolver = (
+  query: string,
+  client: LlmAnthropic,
+) => Promise<{
+  name: string | null;
+  manufacturer: string | null;
+  manufacturer_domain: string | null;
+  category: string | null;
+  cost_usd: number;
+}>;
+
+export const defaultServiceResolver: ServiceResolver = async (query, client) => {
+  const resp = await client.messages.create({
+    model: HAIKU_MODEL,
+    max_tokens: 200,
+    temperature: 0,
+    system: SERVICE_RESOLVE_PROMPT,
+    messages: [{ role: 'user', content: `Service query: ${query}` }],
+  });
+  const cost = computeHaikuCost(resp.usage.input_tokens, resp.usage.output_tokens);
+  const parsed = safeJsonParse<{
+    name?: string | null;
+    manufacturer?: string | null;
+    manufacturer_domain?: string | null;
+    category?: string | null;
+  }>(extractText(resp));
+  return {
+    name: parsed?.name ?? null,
+    manufacturer: parsed?.manufacturer ?? null,
+    manufacturer_domain: parsed?.manufacturer_domain ?? null,
+    category: parsed?.category ?? null,
+    cost_usd: cost,
+  };
+};
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 export type ResolveDeps = {
   client?: LlmAnthropic;
   offSearcher?: OffSearcher;
   esgProbe?: EsgProbe;
+  inputClassifier?: InputClassifier;
+  serviceResolver?: ServiceResolver;
 };
 
 export type ResolveResult = {
@@ -219,6 +305,8 @@ export async function resolveProduct(
   const client = deps.client ?? getDefaultClient();
   const off = deps.offSearcher ?? defaultOffSearcher;
   const esgProbe = deps.esgProbe ?? defaultEsgProbe;
+  const classify = deps.inputClassifier ?? defaultInputClassifier;
+  const resolveService = deps.serviceResolver ?? defaultServiceResolver;
 
   let cost = 0;
   let queryName: string;
@@ -237,7 +325,46 @@ export async function resolveProduct(
     queryName = input.value;
   }
 
-  // Text path: try OFF first.
+  // Pre-flight classification: text-only inputs route to either the
+  // service path (skip OFF) or the existing product path. Image-derived
+  // names go through the product path because vision targets retail items.
+  let inputKind: InputKind = 'unclear';
+  if (input.kind === 'text') {
+    const cls = await classify(queryName, client);
+    cost += cls.cost_usd;
+    inputKind = cls.kind;
+  } else {
+    inputKind = 'product';
+  }
+
+  if (inputKind === 'service') {
+    const svc = await resolveService(queryName, client);
+    cost += svc.cost_usd;
+    if (!svc.manufacturer || !svc.name) {
+      throw new InsufficientProductDataError(
+        `could not resolve service operator for "${queryName}"`,
+      );
+    }
+    const candidate: Product = {
+      id: sha256(normalizeName(svc.name)),
+      name: svc.name,
+      manufacturer: svc.manufacturer,
+      category: svc.category ?? 'unknown',
+      manufacturer_domain: svc.manufacturer_domain ?? undefined,
+    };
+    let esg_report_url: string | undefined;
+    if (candidate.manufacturer_domain) {
+      const found = await esgProbe(candidate.manufacturer_domain);
+      if (found) esg_report_url = found;
+    }
+    const product = ProductSchema.parse({
+      ...candidate,
+      ...(esg_report_url ? { esg_report_url } : {}),
+    });
+    return { product, cost_usd: cost, duration_ms: Date.now() - t0 };
+  }
+
+  // Product / unclear path: existing OFF-first behavior.
   let manufacturer: string | undefined;
   let manufacturer_domain: string | undefined;
   let upc: string | undefined;

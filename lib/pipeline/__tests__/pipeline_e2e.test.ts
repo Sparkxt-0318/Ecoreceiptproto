@@ -8,6 +8,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { clearCache } from '../cache.js';
 import { runPipeline } from '../index.js';
 import { buildItem } from '../sources/_base.js';
+import type { InputClassifier } from '../stage1_resolve.js';
 import type {
   EcoReceipt,
   EvidenceItem,
@@ -16,6 +17,10 @@ import type {
   RawEvidence,
 } from '../types.js';
 import type { EvidenceFetchers } from '../stage3_evidence.js';
+
+// Default to the product path so existing tests' fixed LLM-response sequences
+// (claims, verdict, ...) continue to align without an extra classifier call.
+const productClassifier: InputClassifier = async () => ({ kind: 'product', cost_usd: 0 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -129,7 +134,7 @@ describe('Orchestrator: runPipeline (mocked)', () => {
       { kind: 'text', value: 'Heinz Tomato Ketchup 14oz' },
       {
         client,
-        resolveDeps: { offSearcher: offSearcherHit(), esgProbe: vi.fn().mockResolvedValue(null) },
+        resolveDeps: { offSearcher: offSearcherHit(), esgProbe: vi.fn().mockResolvedValue(null), inputClassifier: productClassifier },
         fetchers: makeFetchers(),
       },
     );
@@ -148,7 +153,7 @@ describe('Orchestrator: runPipeline (mocked)', () => {
       { kind: 'text', value: 'Heinz Tomato Ketchup 14oz' },
       {
         client,
-        resolveDeps: { offSearcher: offSearcherHit(), esgProbe: vi.fn().mockResolvedValue(null) },
+        resolveDeps: { offSearcher: offSearcherHit(), esgProbe: vi.fn().mockResolvedValue(null), inputClassifier: productClassifier },
         fetchers: makeFetchers(),
       },
     );
@@ -168,7 +173,7 @@ describe('Orchestrator: runPipeline (mocked)', () => {
       { kind: 'text', value: 'Heinz Tomato Ketchup 14oz' },
       {
         client,
-        resolveDeps: { offSearcher: offSearcherHit(), esgProbe: vi.fn().mockResolvedValue(null) },
+        resolveDeps: { offSearcher: offSearcherHit(), esgProbe: vi.fn().mockResolvedValue(null), inputClassifier: productClassifier },
         fetchers: makeFetchers(),
       },
     );
@@ -190,7 +195,7 @@ describe('Orchestrator: runPipeline (mocked)', () => {
       { kind: 'text', value: 'Heinz Tomato Ketchup 14oz' },
       {
         client,
-        resolveDeps: { offSearcher: offSearcherHit(), esgProbe: vi.fn().mockResolvedValue(null) },
+        resolveDeps: { offSearcher: offSearcherHit(), esgProbe: vi.fn().mockResolvedValue(null), inputClassifier: productClassifier },
         fetchers,
       },
     );
@@ -206,14 +211,14 @@ describe('Orchestrator: runPipeline (mocked)', () => {
 
     const r1 = await runPipeline(
       { kind: 'text', value: 'Heinz Tomato Ketchup 14oz' },
-      { client, resolveDeps: { offSearcher, esgProbe }, fetchers },
+      { client, resolveDeps: { offSearcher, esgProbe, inputClassifier: productClassifier }, fetchers },
     );
     const callsAfterFirst = create.mock.calls.length;
 
     const t0 = Date.now();
     const r2 = await runPipeline(
       { kind: 'text', value: 'Heinz Tomato Ketchup 14oz' },
-      { client, resolveDeps: { offSearcher, esgProbe }, fetchers },
+      { client, resolveDeps: { offSearcher, esgProbe, inputClassifier: productClassifier }, fetchers },
     );
     const elapsed = Date.now() - t0;
 
@@ -234,7 +239,7 @@ describe('Orchestrator: runPipeline (mocked)', () => {
       { kind: 'text', value: 'Heinz Tomato Ketchup 14oz' },
       {
         client,
-        resolveDeps: { offSearcher: offSearcherHit(), esgProbe: vi.fn().mockResolvedValue(null) },
+        resolveDeps: { offSearcher: offSearcherHit(), esgProbe: vi.fn().mockResolvedValue(null), inputClassifier: productClassifier },
         fetchers: makeFetchers(),
       },
     );

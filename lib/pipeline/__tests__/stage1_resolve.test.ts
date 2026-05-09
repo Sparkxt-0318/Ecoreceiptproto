@@ -1,10 +1,15 @@
 // Stage 1 (resolve product) tests. Both OFF and the LLM client are
 // injected so the test never touches real APIs.
+//
+// `productClassifier` and `serviceClassifier` shorthand stub the pre-flight
+// kind classifier. Tests for the existing product path use productClassifier
+// so the classifier is a no-op (zero LLM calls, zero cost) and the existing
+// "OFF hit doesn't call the LLM" assertions continue to hold.
 
 import { describe, expect, it, vi } from 'vitest';
 import type Anthropic from '@anthropic-ai/sdk';
 
-import { resolveProduct } from '../stage1_resolve.js';
+import { resolveProduct, type InputClassifier, type ServiceResolver } from '../stage1_resolve.js';
 import { InsufficientProductDataError } from '../types.js';
 
 function fakeClient(jsonResponse: unknown) {
@@ -14,6 +19,9 @@ function fakeClient(jsonResponse: unknown) {
   });
   return { client: { messages: { create } } as unknown as Anthropic, create };
 }
+
+const productClassifier: InputClassifier = async () => ({ kind: 'product', cost_usd: 0 });
+const serviceClassifier: InputClassifier = async () => ({ kind: 'service', cost_usd: 0 });
 
 describe('Stage 1: resolveProduct (text input)', () => {
   it('resolves via OpenFoodFacts hit without calling the LLM', async () => {
@@ -29,7 +37,7 @@ describe('Stage 1: resolveProduct (text input)', () => {
 
     const result = await resolveProduct(
       { kind: 'text', value: 'Heinz Tomato Ketchup 14oz' },
-      { client, offSearcher, esgProbe },
+      { client, offSearcher, esgProbe, inputClassifier: productClassifier },
     );
 
     expect(create).not.toHaveBeenCalled();
@@ -50,7 +58,7 @@ describe('Stage 1: resolveProduct (text input)', () => {
 
     const result = await resolveProduct(
       { kind: 'text', value: 'Patagonia Better Sweater Fleece Jacket' },
-      { client, offSearcher, esgProbe },
+      { client, offSearcher, esgProbe, inputClassifier: productClassifier },
     );
 
     expect(create).toHaveBeenCalledTimes(1);
@@ -71,7 +79,7 @@ describe('Stage 1: resolveProduct (text input)', () => {
     await expect(
       resolveProduct(
         { kind: 'text', value: 'qzqzqzqz unknown garbage' },
-        { client, offSearcher, esgProbe },
+        { client, offSearcher, esgProbe, inputClassifier: productClassifier },
       ),
     ).rejects.toThrow(InsufficientProductDataError);
   });
@@ -86,13 +94,74 @@ describe('Stage 1: resolveProduct (text input)', () => {
 
     const a = await resolveProduct(
       { kind: 'text', value: 'Heinz Tomato Ketchup 14oz' },
-      { client, offSearcher, esgProbe },
+      { client, offSearcher, esgProbe, inputClassifier: productClassifier },
     );
     const b = await resolveProduct(
       { kind: 'text', value: 'Heinz Tomato Ketchup 14oz' },
-      { client, offSearcher, esgProbe },
+      { client, offSearcher, esgProbe, inputClassifier: productClassifier },
     );
     expect(a.product.id).toBe(b.product.id);
+  });
+});
+
+describe('Stage 1: resolveProduct (service input)', () => {
+  it('skips OFF and resolves a service operator from training knowledge', async () => {
+    const offSearcher = vi.fn();
+    const { client } = fakeClient({});
+    const esgProbe = vi.fn().mockResolvedValue(null);
+    const serviceResolver: ServiceResolver = vi.fn().mockResolvedValue({
+      name: 'Delta Airlines flight',
+      manufacturer: 'Delta Air Lines, Inc.',
+      manufacturer_domain: 'delta.com',
+      category: 'transport.air.passenger',
+      cost_usd: 0.0002,
+    });
+
+    const result = await resolveProduct(
+      { kind: 'text', value: 'Delta Airlines carbon neutral flight' },
+      {
+        client,
+        offSearcher,
+        esgProbe,
+        inputClassifier: serviceClassifier,
+        serviceResolver,
+      },
+    );
+
+    expect(offSearcher).not.toHaveBeenCalled();
+    expect(serviceResolver).toHaveBeenCalledTimes(1);
+    expect(result.product.manufacturer).toBe('Delta Air Lines, Inc.');
+    expect(result.product.manufacturer_domain).toBe('delta.com');
+    expect(result.product.category).toBe('transport.air.passenger');
+    expect(result.product.id).toMatch(/^[a-f0-9]{64}$/);
+    expect(result.cost_usd).toBeGreaterThan(0);
+  });
+
+  it('throws InsufficientProductDataError when service resolver returns null', async () => {
+    const offSearcher = vi.fn();
+    const { client } = fakeClient({});
+    const esgProbe = vi.fn();
+    const serviceResolver: ServiceResolver = vi.fn().mockResolvedValue({
+      name: null,
+      manufacturer: null,
+      manufacturer_domain: null,
+      category: null,
+      cost_usd: 0.0002,
+    });
+
+    await expect(
+      resolveProduct(
+        { kind: 'text', value: 'some random unknown service xyz' },
+        {
+          client,
+          offSearcher,
+          esgProbe,
+          inputClassifier: serviceClassifier,
+          serviceResolver,
+        },
+      ),
+    ).rejects.toThrow(InsufficientProductDataError);
+    expect(offSearcher).not.toHaveBeenCalled();
   });
 });
 
@@ -148,7 +217,7 @@ describe('Stage 1: resolveProduct (image input)', () => {
 
     const result = await resolveProduct(
       { kind: 'image', value: Buffer.from('fakejpegbytes') },
-      { client, offSearcher, esgProbe },
+      { client, offSearcher, esgProbe, inputClassifier: productClassifier },
     );
 
     expect(create).toHaveBeenCalledTimes(1); // only vision; OFF hit means no manufacturer LLM call
